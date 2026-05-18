@@ -515,6 +515,555 @@ const BADGES = [
   },
 ];
 
+// ─── Badges positifs (victoires) ──────────────────────────────────────────────
+
+const WIN_BADGES = [
+  // --- BRONZE ---
+  {
+    key: "5W",
+    name: "Sur une lancée",
+    description: "Enchaîner 5 victoires d'affilée",
+    rank: "Bronze",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    trigger: ({ winStreak }) => winStreak === 5,
+  },
+  {
+    key: "FIRST_BLOOD_WIN",
+    name: "L'Exécuteur",
+    description: "Obtenir le First Blood et gagner",
+    rank: "Bronze",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    trigger: ({ participant }) => participant.firstBloodKill === true,
+  },
+  {
+    key: "CARRY_BRONZE",
+    name: "Le Porteur",
+    description: "Gagner en faisant au moins 30% des dégâts de l'équipe",
+    rank: "Bronze",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    allowed_queues: QUEUES.SR,
+    trigger: ({ participant }) =>
+      (participant.challenges?.teamDamagePercentage || 0) >= 0.30,
+  },
+  {
+    key: "KDA_WIN_BRONZE",
+    name: "Le Styliste",
+    description: "Obtenir un KDA d'au moins 4 en gagnant",
+    rank: "Bronze",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    trigger: ({ participant }) =>
+      participant.deaths === 0
+        ? participant.kills + participant.assists >= 4
+        : (participant.kills + participant.assists) / participant.deaths >= 4,
+  },
+  {
+    key: "ARAM_WIN",
+    name: "L'Émissaire du Gouffre",
+    description: "Gagner une partie ARAM",
+    rank: "Bronze",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    allowed_queues: QUEUES.ARAM,
+    trigger: () => true,
+  },
+  {
+    key: "ARAM_SNOWBALL_WIN",
+    name: "Lancer de Glace",
+    description: "Gagner une ARAM avec 3 kills ou plus",
+    rank: "Bronze",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    allowed_queues: QUEUES.ARAM,
+    trigger: ({ participant }) => participant.kills >= 3,
+  },
+  {
+    key: "MULTI_KILL_WIN",
+    name: "Le Massacreur",
+    description: "Réaliser un triple kill ou plus en gagnant",
+    rank: "Bronze",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    trigger: ({ participant }) => participant.tripleKills > 0,
+  },
+  {
+    key: "WARD_WIN_BRONZE",
+    name: "L'Éclaireur",
+    description: "Poser 5 wards de contrôle ou plus et gagner (SR)",
+    rank: "Bronze",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    allowed_queues: QUEUES.SR,
+    trigger: ({ participant }) => participant.detectorWardsPlaced >= 5,
+  },
+
+  // --- ARGENT ---
+  {
+    key: "10W",
+    name: "Inarrêtable",
+    description: "Enchaîner 10 victoires d'affilée",
+    rank: "Argent",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    trigger: ({ winStreak }) => winStreak === 10,
+  },
+  {
+    key: "INTOUCHABLE",
+    name: "L'Intouchable",
+    description: "Gagner sans mourir avec au moins 5 kills ou assists",
+    rank: "Argent",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    trigger: ({ participant }) =>
+      participant.deaths === 0 &&
+      participant.kills + participant.assists >= 5,
+  },
+  {
+    key: "VISION_GOD",
+    name: "L'Omniscient",
+    description: "Gagner une partie avec un score de vision de 80+",
+    rank: "Argent",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    allowed_queues: QUEUES.SR,
+    trigger: ({ participant }) => participant.visionScore >= 80,
+  },
+  {
+    key: "COMEBACK",
+    name: "Le Grand Retour",
+    description: "Gagner après une série de 5 défaites ou plus",
+    rank: "Argent",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    trigger: ({ previousLossStreak }) => (previousLossStreak || 0) >= 5,
+  },
+  {
+    key: "SUPPORT_WIN",
+    name: "Le Pilier",
+    description: "Obtenir 15 assists ou plus en gagnant",
+    rank: "Argent",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    trigger: ({ participant }) => participant.assists >= 15,
+  },
+  {
+    key: "ARAM_POKE_WIN",
+    name: "Le Sniper",
+    description: "Gagner une ARAM avec 8 kills ou plus",
+    rank: "Argent",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    allowed_queues: QUEUES.ARAM,
+    trigger: ({ participant }) => participant.kills >= 8,
+  },
+  {
+    key: "ARAM_DEATHLESS_WIN",
+    name: "L'Indestructible",
+    description: "Gagner une ARAM sans mourir",
+    rank: "Argent",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    allowed_queues: QUEUES.ARAM,
+    trigger: ({ participant }) => participant.deaths === 0,
+  },
+  {
+    key: "TOWER_SHREDDER",
+    name: "Le Démolisseur",
+    description: "Détruire 3 tourelles ou plus et gagner (SR)",
+    rank: "Argent",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    allowed_queues: QUEUES.SR,
+    trigger: ({ participant }) => participant.turretTakedowns >= 3,
+  },
+  {
+    key: "SHUTDOWN_WIN",
+    name: "Le Chasseur de Primes",
+    description: "Tuer un joueur avec une prime d'au moins 300 gold et gagner",
+    rank: "Argent",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    trigger: ({ participant }) => (participant.challenges?.bountyGold || 0) >= 300,
+  },
+  {
+    key: "ARAM_ASSISTS_WIN",
+    name: "Le Coordinateur",
+    description: "Obtenir 20 assists ou plus en gagnant une ARAM",
+    rank: "Argent",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    allowed_queues: QUEUES.ARAM,
+    trigger: ({ participant }) => participant.assists >= 20,
+  },
+
+  // --- OR ---
+  {
+    key: "15W",
+    name: "La Machine",
+    description: "Enchaîner 15 victoires d'affilée",
+    rank: "Or",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    trigger: ({ winStreak }) => winStreak === 15,
+  },
+  {
+    key: "CARRY_GOLD",
+    name: "Le Carry Ultime",
+    description: "Gagner en faisant au moins 45% des dégâts de l'équipe",
+    rank: "Or",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    allowed_queues: QUEUES.SR,
+    trigger: ({ participant }) =>
+      (participant.challenges?.teamDamagePercentage || 0) >= 0.45,
+  },
+  {
+    key: "PROMO_WIN",
+    name: "Le Grimpeur",
+    description: "Monter de palier en ranked et gagner",
+    rank: "Or",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    trigger: ({ oldTier, newTier }) => {
+      if (!oldTier || !newTier || oldTier === "UNRANKED" || newTier === "UNRANKED") return false;
+      const TIERS = ["IRON", "BRONZE", "SILVER", "GOLD", "PLATINUM", "EMERALD", "DIAMOND", "MASTER", "GRANDMASTER", "CHALLENGER"];
+      const oldIdx = TIERS.indexOf(oldTier.toUpperCase());
+      const newIdx = TIERS.indexOf(newTier.toUpperCase());
+      return oldIdx > -1 && newIdx > -1 && newIdx > oldIdx;
+    },
+  },
+  {
+    key: "WIN_STREAK_20",
+    name: "Légendaire",
+    description: "Enchaîner 20 victoires d'affilée",
+    rank: "Or",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    trigger: ({ winStreak }) => winStreak === 20,
+  },
+  {
+    key: "TANK_WIN",
+    name: "Le Rempart",
+    description: "Absorber plus de 20 000 dégâts et gagner",
+    rank: "Or",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    allowed_queues: QUEUES.SR,
+    trigger: ({ participant }) => participant.totalDamageTaken >= 20000,
+  },
+  {
+    key: "MACRO_WIN",
+    name: "Le Stratège",
+    description: "Gagner en participant à 3 objectifs épiques ou plus",
+    rank: "Or",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    allowed_queues: QUEUES.SR,
+    trigger: ({ participant }) =>
+      (participant.challenges?.teamBaronKills || 0) + (participant.dragonKills || 0) >= 3 ||
+      participant.kills + participant.assists >= 20,
+  },
+  {
+    key: "ARAM_DOMINATION",
+    name: "Maître du Gouffre",
+    description: "Gagner une ARAM en faisant 40% ou plus des dégâts de l'équipe",
+    rank: "Or",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    allowed_queues: QUEUES.ARAM,
+    trigger: ({ participant }) =>
+      (participant.challenges?.teamDamagePercentage || 0) >= 0.40,
+  },
+  {
+    key: "CLEAN_SWEEP",
+    name: "La Vague Parfaite",
+    description: "Gagner avec toute l'équipe ayant 5 morts ou moins au total (SR)",
+    rank: "Or",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    allowed_queues: QUEUES.SR,
+    trigger: ({ participant, info }) => {
+      const team = info.participants.filter((p) => p.teamId === participant.teamId);
+      return team.reduce((s, p) => s + p.deaths, 0) <= 5;
+    },
+  },
+  {
+    key: "SPEEDRUN_WIN",
+    name: "Speedrun Any% (Victory)",
+    description: "Gagner une partie en moins de 20 minutes (SR)",
+    rank: "Or",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    allowed_queues: QUEUES.SR,
+    trigger: ({ gameDuration }) => gameDuration < 1200,
+  },
+  {
+    key: "ARAM_OBLITERATE",
+    name: "L'Annihilateur",
+    description: "Infliger 80 000 dégâts ou plus aux champions en ARAM et gagner",
+    rank: "Or",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    allowed_queues: QUEUES.ARAM,
+    trigger: ({ participant }) => participant.totalDamageDealtToChampions >= 80000,
+  },
+
+  // --- SECRET ---
+  {
+    key: "PENTA_WIN",
+    name: "Penta-God",
+    description: "Faire un Pentakill et gagner",
+    rank: "Secret",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    trigger: ({ participant }) => participant.pentaKills > 0,
+  },
+  {
+    key: "FARMING_WIN",
+    name: "La Faucheuse",
+    description: "Tuer plus de 300 sbires et gagner",
+    rank: "Secret",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    trigger: ({ participant }) =>
+      participant.totalMinionsKilled + participant.neutralMinionsKilled > 300,
+  },
+  {
+    key: "ACE_WIN",
+    name: "L'Exterminateur",
+    description: "Réaliser un ace (tous les adversaires tués) et gagner",
+    rank: "Secret",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    allowed_queues: QUEUES.SR,
+    trigger: ({ participant, info }) => {
+      const teamId = participant.teamId;
+      const opponents = info.participants.filter((p) => p.teamId !== teamId);
+      return (
+        opponents.length > 0 &&
+        opponents.every((p) => p.deaths > 0) &&
+        participant.kills + participant.assists > 0
+      );
+    },
+  },
+  {
+    key: "ARAM_PENTA_WIN",
+    name: "Carnage du Gouffre",
+    description: "Faire un Pentakill en ARAM et gagner",
+    rank: "Secret",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    allowed_queues: QUEUES.ARAM,
+    trigger: ({ participant }) => participant.pentaKills > 0,
+  },
+  {
+    key: "ARAM_ACE_WIN",
+    name: "Extermination du Gouffre",
+    description: "Réaliser un ace en ARAM et gagner",
+    rank: "Secret",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    allowed_queues: QUEUES.ARAM,
+    trigger: ({ participant, info }) => {
+      const teamId = participant.teamId;
+      const opponents = info.participants.filter((p) => p.teamId !== teamId);
+      return (
+        opponents.length > 0 &&
+        opponents.every((p) => p.deaths > 0) &&
+        participant.kills + participant.assists > 0
+      );
+    },
+  },
+  {
+    key: "BOUNTY_WIN",
+    name: "Chasseur de Primes",
+    description: "Tuer un joueur avec une prime d'au moins 800 gold et gagner",
+    rank: "Secret",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    trigger: ({ participant }) =>
+      (participant.challenges?.bountyGold || 0) >= 800,
+  },
+  {
+    key: "MVP_WIN",
+    name: "Le Meilleur",
+    description: "Avoir le meilleur KDA de son équipe avec 3+ kills/assists et gagner",
+    rank: "Secret",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    allowed_queues: QUEUES.SR,
+    trigger: ({ participant, info }) => {
+      if (participant.kills + participant.assists < 3) return false;
+      const myKda =
+        participant.deaths === 0
+          ? participant.kills + participant.assists
+          : (participant.kills + participant.assists) / participant.deaths;
+      const teammates = info.participants.filter(
+        (p) => p.teamId === participant.teamId && p.puuid !== participant.puuid,
+      );
+      return teammates.every((t) => {
+        const tkda =
+          t.deaths === 0
+            ? t.kills + t.assists
+            : (t.kills + t.assists) / t.deaths;
+        return myKda >= tkda;
+      });
+    },
+  },
+  {
+    key: "WIN_30",
+    name: "Transcendant",
+    description: "Enchaîner 30 victoires d'affilée",
+    rank: "Secret",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    trigger: ({ winStreak }) => winStreak === 30,
+  },
+  {
+    key: "OUTDUELED_WIN",
+    name: "Le Dueliste",
+    description: "Réaliser 3 soloKills ou plus et gagner",
+    rank: "Secret",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    trigger: ({ participant }) =>
+      (participant.challenges?.soloKills || 0) >= 3,
+  },
+  {
+    key: "PERFECT_TEAM_WIN",
+    name: "Indestructibles",
+    description: "Gagner avec toute l'équipe ayant au plus 1 mort chacun",
+    rank: "Secret",
+    version: 1,
+    valence: "positive",
+    repeatable: true,
+    allowed_queues: QUEUES.SR,
+    trigger: ({ participant, info }) => {
+      const teammates = info.participants.filter(
+        (p) => p.teamId === participant.teamId,
+      );
+      return teammates.every((t) => t.deaths <= 1);
+    },
+  },
+
+  // --- PLATINE ---
+  {
+    key: "PLATINE_WIN_V1",
+    name: "Maître des Victoires",
+    description:
+      "Débloquer tous les badges de victoire Bronze, Argent et Or de la saison 1",
+    rank: "Platine",
+    version: 1,
+    valence: "positive",
+    repeatable: false,
+    trigger: ({ ownedBadgeKeys }) => {
+      const required = [
+        "5W", "FIRST_BLOOD_WIN", "CARRY_BRONZE", "KDA_WIN_BRONZE",
+        "ARAM_WIN", "ARAM_SNOWBALL_WIN", "MULTI_KILL_WIN", "WARD_WIN_BRONZE",
+        "10W", "INTOUCHABLE", "VISION_GOD", "COMEBACK", "SUPPORT_WIN",
+        "ARAM_POKE_WIN", "ARAM_DEATHLESS_WIN", "TOWER_SHREDDER", "SHUTDOWN_WIN", "ARAM_ASSISTS_WIN",
+        "15W", "CARRY_GOLD", "PROMO_WIN", "WIN_STREAK_20", "TANK_WIN",
+        "MACRO_WIN", "ARAM_DOMINATION", "CLEAN_SWEEP", "SPEEDRUN_WIN", "ARAM_OBLITERATE",
+      ];
+      return required.every((k) => ownedBadgeKeys.includes(k));
+    },
+  },
+
+  // --- ASCENDANT ---
+  {
+    key: "ASCENDANT_V1",
+    name: "L'Ascendant",
+    description: "Débloquer TOUS les badges victoires et défaites de la saison 1",
+    rank: "Ascendant",
+    version: 1,
+    valence: "positive",
+    repeatable: false,
+    trigger: ({ ownedBadgeKeys }) => {
+      // Requires both the positive and negative Platine meta-badges
+      if (!ownedBadgeKeys.includes("PLATINE_WIN_V1")) return false;
+      if (ownedBadgeKeys.includes("PLATINE_V1")) return true;
+      // Fallback: check all non-secret, non-platine/ascendant badges from BADGES
+      const allRequired = BADGES.filter(
+        (b) =>
+          b.version === 1 &&
+          ["Bronze", "Argent", "Or"].includes(b.rank),
+      );
+      return allRequired.every((b) => ownedBadgeKeys.includes(b.key));
+    },
+  },
+];
+
+function evaluateTriggeredWinBadges(
+  participant,
+  winStreak,
+  info,
+  previousLossStreak = 0,
+  ownedBadgeKeys = [],
+  oldTier = null,
+  newTier = null,
+) {
+  const context = {
+    participant,
+    streak: winStreak,
+    winStreak,
+    gameDuration: info.gameDuration,
+    info,
+    ownedBadgeKeys,
+    previousLossStreak,
+    oldTier,
+    newTier,
+    allParticipants: info.participants,
+  };
+
+  return WIN_BADGES.filter((badge) => {
+    if (badge.allowed_queues && !badge.allowed_queues.includes(info.queueId)) {
+      return false;
+    }
+    if (!badge.repeatable && ownedBadgeKeys.includes(badge.key)) return false;
+    return badge.trigger(context);
+  });
+}
+
 function evaluateTriggeredBadges(
   participant,
   streak,
@@ -563,5 +1112,7 @@ function evaluateTriggeredBadges(
 
 module.exports = {
   BADGES,
+  WIN_BADGES,
   evaluateTriggeredBadges,
+  evaluateTriggeredWinBadges,
 };

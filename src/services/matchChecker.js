@@ -1,7 +1,7 @@
 const axios = require("axios");
 const { db } = require("../database");
 const { RIOT_API_KEY, QUEUE_TYPES, fetchPlayerRank } = require("./riot");
-const { evaluateTriggeredBadges } = require("../../badges");
+const { evaluateTriggeredBadges, evaluateTriggeredWinBadges } = require("../../badges");
 const { recordNotification } = require("./notifications");
 
 /** Si `true` ou `1` : pas d’envoi sur Discord (tests locaux / page Live sans spam). Les stats & la BDD restent mises à jour ; les `recordNotification` restent actifs pour la page Logs. */
@@ -269,6 +269,9 @@ async function _doCheckMatches(client) {
 
         if (!p || info.gameDuration <= 300) continue;
 
+        // Capture la série de défaites AVANT de la réinitialiser (pour le badge COMEBACK)
+        const previousLossStreak = player.loss_streak || 0;
+
         const activeStreak = updateLossStats(player, p.win, p.totalTimeSpentDead);
 
         let badgeKeysEarned = [];
@@ -291,28 +294,10 @@ async function _doCheckMatches(client) {
             message += `\n🔥 Série de défaites : ${activeStreak}`;
           }
 
+          // Filtre par mode : les serveurs en mode 'positive' ne reçoivent pas les défaites
           const subs = db
-            .prepare(`SELECT s.channel_id FROM servers s JOIN server_members sm ON sm.server_id = s.id WHERE sm.puuid = ?`)
+            .prepare(`SELECT s.channel_id FROM servers s JOIN server_members sm ON sm.server_id = s.id WHERE sm.puuid = ? AND (s.mode = 'negative' OR s.mode = 'both')`)
             .all(player.puuid);
-
-          // Récupération des badges cumulés de l'utilisateur Discord (pour éviter le spam s'il a déjà le badge sur un autre compte)
-          // ET récupération du temps de mort TOTAL consolidé
-          let ownedBadgeKeys = [];
-          let totalDeadConsolidated = 0;
-          
-          if (player.discord_user_id) {
-            ownedBadgeKeys = db.prepare(`
-              SELECT DISTINCT badge_key 
-              FROM badges 
-              WHERE entity_id IN (SELECT puuid FROM accounts WHERE discord_user_id = ?)
-            `).all(player.discord_user_id).map(b => b.badge_key);
-            
-            const rowDead = db.prepare("SELECT SUM(total_time_spent_dead) as sum_dead FROM accounts WHERE discord_user_id = ?").get(player.discord_user_id);
-            totalDeadConsolidated = rowDead?.sum_dead || 0;
-          } else {
-            ownedBadgeKeys = db.prepare("SELECT badge_key FROM badges WHERE entity_id = ?").all(player.puuid).map(b => b.badge_key);
-            totalDeadConsolidated = player.total_time_spent_dead || 0;
-          }
 
           // Palier stocké par file (Solo / Flex) — jamais la même colonne pour deux files différentes
           const tierCol = tierColumnForRankedQueue(info.queueId);
@@ -323,32 +308,51 @@ async function _doCheckMatches(client) {
 
           const newTier = rankData ? rankData.tier : null;
 
-          // --- BADGE EVALUATION ---
-          let triggeredBadges = evaluateTriggeredBadges(p, activeStreak, info, ownedBadgeKeys, totalDeadConsolidated, oldTier, newTier);
-          
-          if (triggeredBadges.length > 0) {
-            const updatedBadges = [...ownedBadgeKeys, ...triggeredBadges.map(b => b.key)];
-            const secondPass = evaluateTriggeredBadges(p, activeStreak, info, updatedBadges, totalDeadConsolidated, oldTier, newTier);
-            secondPass.forEach(b => {
-              if (!triggeredBadges.find(tb => tb.key === b.key)) {
-                triggeredBadges.push(b);
-              }
-            });
-          }
+          // Badges négatifs uniquement si le joueur est dans un serveur mode 'negative' ou 'both'
+          if (subs.length > 0) {
+            let ownedBadgeKeys = [];
+            let totalDeadConsolidated = 0;
 
-          const unlockedBadges = [];
-          for (const badge of triggeredBadges) {
-            // On enregistre TOUJOURS sur le PUUID du compte LoL
-            const unlock = registerBadgeUnlock(player.puuid, badge);
-            if (unlock.isNew) {
-              unlockedBadges.push(badge);
+            if (player.discord_user_id) {
+              ownedBadgeKeys = db.prepare(`
+                SELECT DISTINCT badge_key
+                FROM badges
+                WHERE entity_id IN (SELECT puuid FROM accounts WHERE discord_user_id = ?)
+              `).all(player.discord_user_id).map(b => b.badge_key);
+
+              const rowDead = db.prepare("SELECT SUM(total_time_spent_dead) as sum_dead FROM accounts WHERE discord_user_id = ?").get(player.discord_user_id);
+              totalDeadConsolidated = rowDead?.sum_dead || 0;
+            } else {
+              ownedBadgeKeys = db.prepare("SELECT badge_key FROM badges WHERE entity_id = ?").all(player.puuid).map(b => b.badge_key);
+              totalDeadConsolidated = player.total_time_spent_dead || 0;
             }
-          }
-          if (unlockedBadges.length > 0) {
-            message += `\n${await formatBadgeAnnouncement(client, player, unlockedBadges)}`;
-          }
 
-          badgeKeysEarned = unlockedBadges.map((b) => b.key);
+            // --- BADGE EVALUATION ---
+            let triggeredBadges = evaluateTriggeredBadges(p, activeStreak, info, ownedBadgeKeys, totalDeadConsolidated, oldTier, newTier);
+
+            if (triggeredBadges.length > 0) {
+              const updatedBadges = [...ownedBadgeKeys, ...triggeredBadges.map(b => b.key)];
+              const secondPass = evaluateTriggeredBadges(p, activeStreak, info, updatedBadges, totalDeadConsolidated, oldTier, newTier);
+              secondPass.forEach(b => {
+                if (!triggeredBadges.find(tb => tb.key === b.key)) {
+                  triggeredBadges.push(b);
+                }
+              });
+            }
+
+            const unlockedBadges = [];
+            for (const badge of triggeredBadges) {
+              const unlock = registerBadgeUnlock(player.puuid, badge);
+              if (unlock.isNew) {
+                unlockedBadges.push(badge);
+              }
+            }
+            if (unlockedBadges.length > 0) {
+              message += `\n${await formatBadgeAnnouncement(client, player, unlockedBadges)}`;
+            }
+
+            badgeKeysEarned = unlockedBadges.map((b) => b.key);
+          }
 
           // Mise à jour du palier pour la file de cette partie uniquement
           if (newTier && tierCol) {
@@ -425,15 +429,110 @@ async function _doCheckMatches(client) {
             });
           }
         } else {
-          // Même en cas de victoire, on met à jour le tier pour suivre les montées/descentes
+          // Victoire — mise à jour du tier
           const rankData = await fetchPlayerRank(player.puuid, info.queueId);
           const winTierCol = tierColumnForRankedQueue(info.queueId);
+          const oldTierWin = winTierCol && player[winTierCol] ? player[winTierCol] : null;
           if (rankData && winTierCol) {
-            db.prepare(`UPDATE accounts SET ${winTierCol} = ? WHERE puuid = ?`).run(
-              rankData.tier,
-              player.puuid,
-            );
+            db.prepare(`UPDATE accounts SET ${winTierCol} = ? WHERE puuid = ?`).run(rankData.tier, player.puuid);
             player[winTierCol] = rankData.tier;
+          }
+
+          // Récupération du win_streak actuel (après updateLossStats l'a incrémenté)
+          const winStreakRow = db.prepare("SELECT win_streak FROM accounts WHERE puuid = ?").get(player.puuid);
+          const currentWinStreak = winStreakRow?.win_streak || 0;
+
+          const queueName = QUEUE_TYPES[info.queueId] || "Partie";
+          const min = Math.floor(info.gameDuration / 60);
+          const sec = (info.gameDuration % 60).toString().padStart(2, "0");
+
+          let winMessage = `✅ [${queueName}] - **${player.game_name}** a gagné avec **${p.championName}** (${p.kills}/${p.deaths}/${p.assists}) en **${min}:${sec}** min.`;
+          if (rankData) winMessage += ` - ${rankData.tier} ${rankData.rank} — ${rankData.lp} LP`;
+          if (currentWinStreak > 1) winMessage += `\n🔥 Série de victoires : ${currentWinStreak}`;
+
+          // Filtre par mode : les serveurs en mode 'negative' ne reçoivent pas les victoires
+          const winSubs = db
+            .prepare(`SELECT s.channel_id FROM servers s JOIN server_members sm ON sm.server_id = s.id WHERE sm.puuid = ? AND (s.mode = 'positive' OR s.mode = 'both')`)
+            .all(player.puuid);
+
+          // Badges positifs uniquement si le joueur est dans un serveur mode 'positive' ou 'both'
+          if (winSubs.length > 0) {
+            let ownedBadgeKeysWin = [];
+            if (player.discord_user_id) {
+              ownedBadgeKeysWin = db.prepare(`SELECT DISTINCT badge_key FROM badges WHERE entity_id IN (SELECT puuid FROM accounts WHERE discord_user_id = ?)`).all(player.discord_user_id).map(b => b.badge_key);
+            } else {
+              ownedBadgeKeysWin = db.prepare("SELECT badge_key FROM badges WHERE entity_id = ?").all(player.puuid).map(b => b.badge_key);
+            }
+
+            let triggeredWinBadges = evaluateTriggeredWinBadges(p, currentWinStreak, info, previousLossStreak, ownedBadgeKeysWin, oldTierWin, rankData?.tier ?? null);
+            if (triggeredWinBadges.length > 0) {
+              const updatedKeys = [...ownedBadgeKeysWin, ...triggeredWinBadges.map(b => b.key)];
+              const secondPass = evaluateTriggeredWinBadges(p, currentWinStreak, info, previousLossStreak, updatedKeys, oldTierWin, rankData?.tier ?? null);
+              secondPass.forEach(b => { if (!triggeredWinBadges.find(tb => tb.key === b.key)) triggeredWinBadges.push(b); });
+            }
+
+            const unlockedWinBadges = [];
+            for (const badge of triggeredWinBadges) {
+              const unlock = registerBadgeUnlock(player.puuid, badge);
+              if (unlock.isNew) unlockedWinBadges.push(badge);
+            }
+            if (unlockedWinBadges.length > 0) {
+              winMessage += `\n${await formatBadgeAnnouncement(client, player, unlockedWinBadges)}`;
+            }
+
+            badgeKeysEarned = unlockedWinBadges.map(b => b.key);
+          }
+
+          if (SKIP_DISCORD_SEND) {
+            console.log(`[SKIP_DISCORD_NOTIFICATIONS] Victoire non envoyée (${winSubs.length} salon(s)) :`, String(winMessage).slice(0, 160).replace(/\n/g, " ") + "…");
+          } else {
+            for (const sub of winSubs) {
+              const chan = await client.channels.fetch(sub.channel_id).catch(() => null);
+              if (chan) await chan.send(winMessage);
+            }
+          }
+
+          const tsWin = info.gameEndTimestamp || Date.now();
+          recordNotification({
+            ts: tsWin,
+            kind: "win",
+            accountPuuid: player.puuid,
+            matchId,
+            message: `✅ [${queueName}] - ${player.game_name} a gagné avec ${p.championName} (${p.kills}/${p.deaths}/${p.assists}) en ${min}:${sec} min.${rankData ? ` - ${rankData.tier} ${rankData.rank} — ${rankData.lp} LP` : ""}`,
+            details: {
+              queueLabel: queueName,
+              accountName: player.game_name,
+              champion: p.championName,
+              kills: p.kills,
+              deaths: p.deaths,
+              assists: p.assists,
+              durationSeconds: info.gameDuration,
+              tier: rankData ? `${rankData.tier} ${rankData.rank}` : null,
+              streakCount: currentWinStreak,
+            },
+          });
+
+          for (const badge of unlockedWinBadges) {
+            recordNotification({
+              ts: tsWin + 1,
+              kind: "badge",
+              accountPuuid: player.puuid,
+              matchId,
+              message: `✨ ${player.game_name} vient de débloquer le badge « ${badge.name} ».`,
+              details: { accountName: player.game_name, badgeKey: badge.key, badgeName: badge.name, badgeRank: badge.rank },
+            });
+          }
+
+          const WIN_STREAK_MILESTONES = new Set([5, 10, 15]);
+          if (WIN_STREAK_MILESTONES.has(currentWinStreak)) {
+            recordNotification({
+              ts: tsWin + 2,
+              kind: "streak",
+              accountPuuid: player.puuid,
+              matchId,
+              message: `🏆 ${player.game_name} enchaîne ${currentWinStreak} victoires d'affilée !`,
+              details: { accountName: player.game_name, streakCount: currentWinStreak },
+            });
           }
         }
 
