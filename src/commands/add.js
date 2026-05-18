@@ -34,6 +34,8 @@ module.exports = {
       ).run(g, puuid);
       if (discordUser) {
         db.prepare("UPDATE accounts SET discord_user_id = ? WHERE puuid = ?").run(discordUser.id, puuid);
+        const user = db.prepare("SELECT id FROM users WHERE discord_id = ?").get(discordUser.id);
+        if (user) db.prepare("UPDATE accounts SET user_id = ? WHERE puuid = ?").run(user.id, puuid);
       }
       // Upsert du serveur (guild + salon courant)
       db.prepare(`

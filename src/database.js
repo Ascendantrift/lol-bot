@@ -320,6 +320,21 @@ function ensureSchema() {
     }
   } catch (e) { console.error("❌ Migration badge_definitions.valence:", e.message); }
 
+  // accounts : user_id (FK vers users.id, remplace discord_user_id côté front)
+  try {
+    const accCols = db.prepare("PRAGMA table_info(accounts)").all().map(c => c.name);
+    if (!accCols.includes("user_id")) {
+      db.exec("ALTER TABLE accounts ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE SET NULL");
+      // Peuple depuis discord_user_id si la colonne existe
+      if (accCols.includes("discord_user_id")) {
+        db.exec(`UPDATE accounts SET user_id = (
+          SELECT id FROM users WHERE discord_id = accounts.discord_user_id
+        ) WHERE discord_user_id IS NOT NULL`);
+      }
+      console.log("✅ Migration : accounts.user_id ajouté et peuplé.");
+    }
+  } catch (e) { console.error("❌ Migration accounts.user_id:", e.message); }
+
   // ═══════════════════════════════════════════════════════
   // MIGRATIONS TABLES OBSOLÈTES
   // ═══════════════════════════════════════════════════════

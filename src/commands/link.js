@@ -16,6 +16,8 @@ module.exports = {
     if (!player) return interaction.reply({ content: `❌ Joueur introuvable dans le suivi : **${identifiant}**`, ephemeral: true });
 
     db.prepare("UPDATE accounts SET discord_user_id = ? WHERE puuid = ?").run(discordUser.id, player.puuid);
+    const user = db.prepare("SELECT id FROM users WHERE discord_id = ?").get(discordUser.id);
+    if (user) db.prepare("UPDATE accounts SET user_id = ? WHERE puuid = ?").run(user.id, player.puuid);
     
     const embed = new EmbedBuilder()
       .setTitle("🔗 Liaison effectuée")
