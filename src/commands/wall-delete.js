@@ -1,33 +1,22 @@
 const { SlashCommandBuilder, PermissionFlagsBits } = require("discord.js");
-const { db } = require("../database");
+const { sql } = require("../database");
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("wall-delete")
-    .setDescription("Supprimer un message du mur par son ID (Admin)")
+    .setDescription("Supprimer un message du mur par son ID Discord (Admin)")
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addStringOption((opt) =>
-      opt
-        .setName("id")
-        .setDescription("ID Discord du message (visible sur le mur)")
-        .setRequired(true),
+      opt.setName("id").setDescription("ID Discord du message").setRequired(true),
     ),
   async execute(interaction) {
-    const raw = interaction.options.getString("id").replace(/^#/, "");
-    const seq = parseInt(raw, 10);
-    const result = isNaN(seq)
-      ? { changes: 0 }
-      : db.prepare("DELETE FROM wall_messages WHERE rowid = ?").run(seq);
-    if (result.changes > 0) {
-      await interaction.reply({
-        content: `✅ Message \`#${seq}\` supprimé du mur.`,
-        ephemeral: true,
-      });
+    const msgId  = interaction.options.getString("id").replace(/^#/, "").trim();
+    const result = await sql`DELETE FROM wall_messages WHERE id = ${msgId}`;
+
+    if (result.count > 0) {
+      await interaction.reply({ content: `✅ Message \`${msgId}\` supprimé du mur.`, ephemeral: true });
     } else {
-      await interaction.reply({
-        content: `❌ Aucun message avec le numéro \`#${raw}\` trouvé dans le mur.`,
-        ephemeral: true,
-      });
+      await interaction.reply({ content: `❌ Aucun message avec l'ID \`${msgId}\` trouvé dans le mur.`, ephemeral: true });
     }
   },
 };

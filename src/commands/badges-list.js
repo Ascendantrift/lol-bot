@@ -1,6 +1,6 @@
 const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
 const { BADGES } = require("../../badges");
-const { db } = require("../database");
+const { sql } = require("../database");
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -9,63 +9,46 @@ module.exports = {
   async execute(interaction) {
     await interaction.deferReply();
 
-    const ranks = ["Bronze", "Argent", "Or", "Platine"];
-    const rankEmojis = {
-      Bronze: "🥉",
-      Argent: "🥈",
-      Or: "🥇",
-      Platine: "💎",
-    };
-    const rankColors = {
-      Bronze: 0xcd7f32,
-      Argent: 0xc0c0c0,
-      Or: 0xffd700,
-      Platine: 0x00ffff,
-    };
+    const ranks      = ["Bronze", "Argent", "Or", "Platine"];
+    const rankEmojis = { Bronze: "🥉", Argent: "🥈", Or: "🥇", Platine: "💎" };
+    const rankColors = { Bronze: 0xcd7f32, Argent: 0xc0c0c0, Or: 0xffd700, Platine: 0x00ffff };
+
+    const unlockedRows = await sql`SELECT DISTINCT badge_key FROM badges`;
+    // kept for potential future use (highlight unlocked badges)
+    void unlockedRows;
 
     const embeds = [];
 
-    const unlockedKeys = db.prepare("SELECT DISTINCT badge_key FROM badges").all().map(r => r.badge_key);
-
     ranks.forEach((rank) => {
       const rankBadges = BADGES.filter((b) => b.rank === rank);
-      if (rankBadges.length) {
-        const emoji = rankEmojis[rank] || "🌟";
-        
-        // On crée un ou plusieurs embeds par rang car la description est limitée à 4096 car.
-        // Et on ne veut pas trop de champs non plus (limite 25).
-        let currentEmbed = new EmbedBuilder()
-          .setTitle(`${emoji} Rang ${rank} ${emoji}`)
-          .setColor(rankColors[rank] || 0xffffff);
+      if (!rankBadges.length) return;
 
-        rankBadges.forEach((badge, index) => {
-          // Si on dépasse 25 champs, on crée un nouvel embed
-          if (index > 0 && index % 25 === 0) {
-            embeds.push(currentEmbed);
-            currentEmbed = new EmbedBuilder()
-              .setTitle(`${emoji} Rang ${rank} (Suite) ${emoji}`)
-              .setColor(rankColors[rank] || 0xffffff);
-          }
-          
-          currentEmbed.addFields({
-            name: badge.name,
-            value: `*${badge.description}*\n${badge.repeatable ? "🔄 Répétable" : "🔒 Unique"}`,
-            inline: true
-          });
+      const emoji = rankEmojis[rank] || "🌟";
+      let currentEmbed = new EmbedBuilder()
+        .setTitle(`${emoji} Rang ${rank} ${emoji}`)
+        .setColor(rankColors[rank] || 0xffffff);
+
+      rankBadges.forEach((badge, index) => {
+        if (index > 0 && index % 25 === 0) {
+          embeds.push(currentEmbed);
+          currentEmbed = new EmbedBuilder()
+            .setTitle(`${emoji} Rang ${rank} (Suite) ${emoji}`)
+            .setColor(rankColors[rank] || 0xffffff);
+        }
+        currentEmbed.addFields({
+          name: badge.name,
+          value: `*${badge.description}*\n${badge.repeatable ? "🔄 Répétable" : "🔒 Unique"}`,
+          inline: true,
         });
-        
-        embeds.push(currentEmbed);
-      }
+      });
+
+      embeds.push(currentEmbed);
     });
 
-    // Discord limite à 10 embeds par message. Si on en a plus, on envoie plusieurs messages.
     for (let i = 0; i < embeds.length; i += 10) {
       const chunk = embeds.slice(i, i + 10);
-      if (i === 0) {
-        await interaction.editReply({ embeds: chunk });
-      } else {
-        await interaction.followUp({ embeds: chunk });
-      }
+      if (i === 0) await interaction.editReply({ embeds: chunk });
+      else         await interaction.followUp({ embeds: chunk });
     }
   },
 };

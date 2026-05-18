@@ -1,31 +1,11 @@
-const { db } = require("../database");
+const { sql } = require("../database");
 
-/**
- * Enregistre dans la table `notifications` ce qui vient d’être envoyé sur
- * Discord. La page « Logs » du front lit directement cette table — aucune
- * autre source de vérité n’est utilisée côté affichage.
- *
- * @param {{
- *   ts?: number,
- *   kind: 'loss' | 'win' | 'badge' | 'streak',
- *   accountPuuid?: string | null,
- *   message: string,
- *   details?: Record<string, unknown> | null,
- * }} params
- */
-function recordNotification({ ts, kind, accountPuuid = null, message, details = null, matchId = null }) {
+async function recordNotification({ ts, kind, accountPuuid = null, message, details = null, matchId = null }) {
   try {
-    db.prepare(
-      `INSERT INTO notifications (ts, kind, account_puuid, message, details_json, match_id)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(
-      ts ?? Date.now(),
-      kind,
-      accountPuuid,
-      message,
-      details ? JSON.stringify(details) : null,
-      matchId,
-    );
+    await sql`
+      INSERT INTO notifications (ts, kind, account_puuid, message, details_json, match_id)
+      VALUES (${ts ?? Date.now()}, ${kind}, ${accountPuuid}, ${message}, ${details ? JSON.stringify(details) : null}, ${matchId})
+    `;
   } catch (e) {
     console.error(`notifications insert (${kind}):`, e.message);
   }

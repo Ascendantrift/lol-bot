@@ -1,5 +1,5 @@
 const { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder } = require("discord.js");
-const { db } = require("../database");
+const { sql } = require("../database");
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -11,14 +11,17 @@ module.exports = {
   async execute(interaction) {
     const identifiant = interaction.options.getString("joueur");
     const discordUser = interaction.options.getUser("discord");
-    const player = db.prepare("SELECT puuid, game_name, tag_line FROM accounts WHERE puuid = ? OR game_name = ?").get(identifiant, identifiant);
+    const [player] = await sql`SELECT puuid, game_name, tag_line FROM accounts WHERE puuid = ${identifiant} OR game_name = ${identifiant}`;
 
     if (!player) return interaction.reply({ content: `❌ Joueur introuvable dans le suivi : **${identifiant}**`, ephemeral: true });
 
-    db.prepare("UPDATE accounts SET discord_user_id = ? WHERE puuid = ?").run(discordUser.id, player.puuid);
-    const user = db.prepare("SELECT id FROM users WHERE discord_id = ?").get(discordUser.id);
-    if (user) db.prepare("UPDATE accounts SET user_id = ? WHERE puuid = ?").run(user.id, player.puuid);
-    
+    const [user] = await sql`SELECT id FROM users WHERE discord_id = ${discordUser.id}`;
+    if (user) {
+      await sql`UPDATE accounts SET user_id = ${user.id} WHERE puuid = ${player.puuid}`;
+    } else {
+      await sql`UPDATE accounts SET user_id = NULL WHERE puuid = ${player.puuid}`;
+    }
+
     const embed = new EmbedBuilder()
       .setTitle("🔗 Liaison effectuée")
       .setColor(0x3498db)
@@ -27,5 +30,5 @@ module.exports = {
       .setTimestamp();
 
     await interaction.reply({ embeds: [embed] });
-  }
+  },
 };

@@ -1,16 +1,9 @@
-const fs = require("fs");
-const { ensureSchema } = require("./src/database");
+// Ce fichier n'est plus nécessaire : le schéma PostgreSQL est géré par
+// drizzle-kit (Lol_Bot_Dev). `ensureReady()` dans database.js s'occupe
+// uniquement du seed des badge_definitions au démarrage du bot.
+require("dotenv").config();
+const { ensureReady } = require("./src/database");
 
-// Charger l'environnement
-const envPath = process.env.NODE_ENV === "test" ? ".env.test" : ".env";
-require("dotenv").config({ path: envPath });
-
-// Assurer l'existence du dossier data
-if (!fs.existsSync("data")) {
-  fs.mkdirSync("data", { recursive: true });
-}
-
-// Initialiser le schéma (V2)
-ensureSchema();
-
-console.log("✅ Base de données initialisée !");
+ensureReady()
+  .then(() => { console.log("✅ Base de données prête."); process.exit(0); })
+  .catch((e) => { console.error("❌", e.message); process.exit(1); });

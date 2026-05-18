@@ -1,144 +1,133 @@
 const axios = require("axios");
-const { db } = require("../database");
+const { sql } = require("../database");
 const { RIOT_API_KEY, QUEUE_TYPES, fetchPlayerRank } = require("./riot");
 const { evaluateTriggeredBadges, evaluateTriggeredWinBadges } = require("../../badges");
 const { recordNotification } = require("./notifications");
 
-/** Si `true` ou `1` : pas d’envoi sur Discord (tests locaux / page Live sans spam). Les stats & la BDD restent mises à jour ; les `recordNotification` restent actifs pour la page Logs. */
 const SKIP_DISCORD_SEND =
   process.env.SKIP_DISCORD_NOTIFICATIONS === "1" ||
   process.env.SKIP_DISCORD_NOTIFICATIONS === "true";
 
-/** Mutex simple : empêche deux exécutions concurrentes de checkMatches de traiter les mêmes parties en double. */
 let _checkRunning = false;
 
-/** Paliers de série de défaites à journaliser (kind = 'streak'). */
 const STREAK_MILESTONES = new Set([3, 5, 10, 15]);
 
-/** Colonne `accounts` pour le rang Riot : uniquement SoloQ (420) ou Flex (440). */
 function tierColumnForRankedQueue(queueId) {
   if (queueId === 420) return "last_tier_solo";
   if (queueId === 440) return "last_tier_flex";
   return null;
 }
 
-function updateLossStats(player, isWin, timeSpentDead = 0) {
+async function updateLossStats(player, isWin, timeSpentDead = 0) {
   const puuid = player.puuid;
   const monthStr = new Date().toISOString().slice(0, 7);
 
-  // Temps mort (toujours)
-  db.prepare("UPDATE accounts SET total_time_spent_dead = total_time_spent_dead + ? WHERE puuid = ?").run(timeSpentDead, puuid);
+  await sql`UPDATE accounts SET total_time_spent_dead = total_time_spent_dead + ${timeSpentDead} WHERE puuid = ${puuid}`;
 
   if (isWin) {
-    // Victoire : reset loss_streak, incrémente win stats
-    if (player.discord_user_id) {
-      db.prepare("UPDATE accounts SET loss_streak = 0 WHERE discord_user_id = ?").run(player.discord_user_id);
+    if (player.user_id) {
+      await sql`UPDATE accounts SET loss_streak = 0 WHERE user_id = ${player.user_id}`;
     } else {
-      db.prepare("UPDATE accounts SET loss_streak = 0 WHERE puuid = ?").run(puuid);
+      await sql`UPDATE accounts SET loss_streak = 0 WHERE puuid = ${puuid}`;
     }
-    db.prepare("UPDATE accounts SET win_streak = win_streak + 1, total_wins = total_wins + 1 WHERE puuid = ?").run(puuid);
-    db.prepare("UPDATE accounts SET max_win_streak = MAX(max_win_streak, win_streak) WHERE puuid = ?").run(puuid);
+    await sql`UPDATE accounts SET win_streak = win_streak + 1, total_wins = total_wins + 1 WHERE puuid = ${puuid}`;
+    await sql`UPDATE accounts SET max_win_streak = GREATEST(max_win_streak, win_streak) WHERE puuid = ${puuid}`;
 
-    db.prepare(`
+    await sql`
       INSERT INTO monthly_stats (puuid, month, wins, losses, games, total_time_spent_dead)
-      VALUES (?, ?, 1, 0, 1, ?)
-      ON CONFLICT(puuid, month) DO UPDATE SET
-        wins  = wins + 1,
-        games = games + 1,
-        total_time_spent_dead = total_time_spent_dead + ?
-    `).run(puuid, monthStr, timeSpentDead, timeSpentDead);
+      VALUES (${puuid}, ${monthStr}, 1, 0, 1, ${timeSpentDead})
+      ON CONFLICT (puuid, month) DO UPDATE SET
+        wins                = monthly_stats.wins + 1,
+        games               = monthly_stats.games + 1,
+        total_time_spent_dead = monthly_stats.total_time_spent_dead + ${timeSpentDead}
+    `;
   } else {
-    // Défaite : reset win_streak, incrémente loss stats
-    db.prepare("UPDATE accounts SET win_streak = 0 WHERE puuid = ?").run(puuid);
-    db.prepare("UPDATE accounts SET loss_streak = loss_streak + 1, total_losses = total_losses + 1 WHERE puuid = ?").run(puuid);
-    db.prepare("UPDATE accounts SET max_loss_streak = MAX(max_loss_streak, loss_streak) WHERE puuid = ?").run(puuid);
+    await sql`UPDATE accounts SET win_streak = 0 WHERE puuid = ${puuid}`;
+    await sql`UPDATE accounts SET loss_streak = loss_streak + 1, total_losses = total_losses + 1 WHERE puuid = ${puuid}`;
+    await sql`UPDATE accounts SET max_loss_streak = GREATEST(max_loss_streak, loss_streak) WHERE puuid = ${puuid}`;
 
-    db.prepare(`
+    await sql`
       INSERT INTO monthly_stats (puuid, month, wins, losses, games, total_time_spent_dead)
-      VALUES (?, ?, 0, 1, 1, ?)
-      ON CONFLICT(puuid, month) DO UPDATE SET
-        losses = losses + 1,
-        games  = games + 1,
-        total_time_spent_dead = total_time_spent_dead + ?
-    `).run(puuid, monthStr, timeSpentDead, timeSpentDead);
+      VALUES (${puuid}, ${monthStr}, 0, 1, 1, ${timeSpentDead})
+      ON CONFLICT (puuid, month) DO UPDATE SET
+        losses              = monthly_stats.losses + 1,
+        games               = monthly_stats.games + 1,
+        total_time_spent_dead = monthly_stats.total_time_spent_dead + ${timeSpentDead}
+    `;
   }
 
-  if (player.discord_user_id) {
-    const row = db
-      .prepare(
-        "SELECT SUM(loss_streak) as sum_streak FROM accounts WHERE discord_user_id = ?",
-      )
-      .get(player.discord_user_id);
-    return row ? row.sum_streak : 0;
+  if (player.user_id) {
+    const [row] = await sql`SELECT SUM(loss_streak)::int AS sum_streak FROM accounts WHERE user_id = ${player.user_id}`;
+    return row?.sum_streak || 0;
   } else {
-    const row = db
-      .prepare("SELECT loss_streak FROM accounts WHERE puuid = ?")
-      .get(puuid);
-    return row ? row.loss_streak : 0;
+    const [row] = await sql`SELECT loss_streak FROM accounts WHERE puuid = ${puuid}`;
+    return row?.loss_streak || 0;
   }
 }
 
-function insertMatchHistory(matchId, puuid, participant, info, win, badgeKeys) {
+async function insertMatchHistory(matchId, puuid, participant, info, win, badgeKeys) {
   try {
     const playedAt = new Date(info.gameEndTimestamp).toISOString();
     const badgesJson =
       Array.isArray(badgeKeys) && badgeKeys.length > 0
         ? JSON.stringify(badgeKeys)
         : null;
-    const teamPosition = typeof participant.teamPosition === "string" && participant.teamPosition
-      ? participant.teamPosition
-      : null;
-    db.prepare(
-      `
-      INSERT OR REPLACE INTO match_history (
+    const teamPosition =
+      typeof participant.teamPosition === "string" && participant.teamPosition
+        ? participant.teamPosition
+        : null;
+
+    await sql`
+      INSERT INTO match_history (
         id, puuid, champion_name, kills, deaths, assists,
         duration_seconds, queue_id, played_at, win, badges_json, time_spent_dead_seconds,
         team_position
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `,
-    ).run(
-      matchId,
-      puuid,
-      participant.championName,
-      participant.kills,
-      participant.deaths,
-      participant.assists,
-      info.gameDuration,
-      info.queueId,
-      playedAt,
-      win ? 1 : 0,
-      badgesJson,
-      typeof participant.totalTimeSpentDead === "number" ? participant.totalTimeSpentDead : 0,
-      teamPosition,
-    );
+      ) VALUES (
+        ${matchId}, ${puuid}, ${participant.championName},
+        ${participant.kills}, ${participant.deaths}, ${participant.assists},
+        ${info.gameDuration}, ${info.queueId}, ${playedAt}, ${win},
+        ${badgesJson},
+        ${typeof participant.totalTimeSpentDead === "number" ? participant.totalTimeSpentDead : 0},
+        ${teamPosition}
+      )
+      ON CONFLICT (id, puuid) DO UPDATE SET
+        champion_name           = EXCLUDED.champion_name,
+        kills                   = EXCLUDED.kills,
+        deaths                  = EXCLUDED.deaths,
+        assists                 = EXCLUDED.assists,
+        duration_seconds        = EXCLUDED.duration_seconds,
+        queue_id                = EXCLUDED.queue_id,
+        played_at               = EXCLUDED.played_at,
+        win                     = EXCLUDED.win,
+        badges_json             = EXCLUDED.badges_json,
+        time_spent_dead_seconds = EXCLUDED.time_spent_dead_seconds,
+        team_position           = EXCLUDED.team_position
+    `;
   } catch (e) {
     console.error("match_history:", e.message);
   }
 }
 
-function registerBadgeUnlock(puuid, badge) {
+async function registerBadgeUnlock(puuid, badge) {
   const nowIso = new Date().toISOString();
-  // On stocke toujours sur le PUUID du compte LoL
-  const exists = db
-    .prepare(
-      "SELECT unlock_count FROM badges WHERE entity_id = ? AND badge_key = ?",
-    )
-    .get(puuid, badge.key);
+  const [exists] = await sql`SELECT unlock_count FROM badges WHERE entity_id = ${puuid} AND badge_key = ${badge.key}`;
 
   if (exists && !badge.repeatable) {
     return { isNew: false, unlockCount: exists.unlock_count };
   }
 
   if (!exists) {
-    db.prepare(
-      "INSERT INTO badges (entity_id, is_discord, badge_key, first_unlocked_at, last_unlocked_at, unlock_count) VALUES (?, 0, ?, ?, ?, 1)",
-    ).run(puuid, badge.key, nowIso, nowIso);
+    await sql`
+      INSERT INTO badges (entity_id, badge_key, first_unlocked_at, last_unlocked_at, unlock_count)
+      VALUES (${puuid}, ${badge.key}, ${nowIso}, ${nowIso}, 1)
+    `;
     return { isNew: true, unlockCount: 1 };
   }
 
-  db.prepare(
-    "UPDATE badges SET unlock_count = unlock_count + 1, last_unlocked_at = ? WHERE entity_id = ? AND badge_key = ?",
-  ).run(nowIso, puuid, badge.key);
+  await sql`
+    UPDATE badges SET unlock_count = unlock_count + 1, last_unlocked_at = ${nowIso}
+    WHERE entity_id = ${puuid} AND badge_key = ${badge.key}
+  `;
   return { isNew: true, unlockCount: exists.unlock_count + 1 };
 }
 
@@ -146,32 +135,25 @@ async function formatBadgeAnnouncement(client, player, unlockedBadges) {
   if (!unlockedBadges.length) return "";
 
   let discordLabel = `**${player.game_name}**`;
-  if (player.discord_user_id) {
+  if (player.discord_id) {
     try {
       const user =
-        client.users.cache.get(player.discord_user_id) ||
-        (await client.users.fetch(player.discord_user_id));
+        client.users.cache.get(player.discord_id) ||
+        (await client.users.fetch(player.discord_id));
       discordLabel = `**${user.globalName || user.username}**`;
-    } catch {
-      // fallback
-    }
+    } catch { /* fallback au pseudo LoL */ }
   }
 
   let announcement = "";
-
   const normalBadges = unlockedBadges.filter((b) => b.rank !== "Secret");
   const secretBadges = unlockedBadges.filter((b) => b.rank === "Secret");
 
   if (normalBadges.length > 0) {
     const badgesText = normalBadges
-      .map(
-        (badge) =>
-          `le badge **${badge.name}** (${badge.rank}) : ${badge.description}`,
-      )
+      .map((badge) => `le badge **${badge.name}** (${badge.rank}) : ${badge.description}`)
       .join(", et ");
     announcement += `🎖️ Grâce à sa performance, ${discordLabel} gagne ${badgesText}.\n`;
   }
-
   if (secretBadges.length > 0) {
     const secretText = secretBadges
       .map((badge) => `**${badge.name}** : *${badge.description}*`)
@@ -196,83 +178,62 @@ async function checkMatches(client) {
 }
 
 async function _doCheckMatches(client) {
-  const accounts = db.prepare("SELECT * FROM accounts").all();
+  // JOIN users pour récupérer discord_id (snowflake) en plus de user_id (int FK)
+  const accounts = await sql`
+    SELECT a.*, u.discord_id FROM accounts a LEFT JOIN users u ON u.id = a.user_id
+  `;
   const now = Date.now();
 
   for (const player of accounts) {
     try {
-      // --- LOGIQUE D'INTERVALLE ADAPTATIF ---
-      const lastMatchAt = player.last_match_at || 0;
-      const lastCheckedAt = player.last_checked_at || 0;
+      const lastMatchAt    = Number(player.last_match_at) || 0;
+      const lastCheckedAt  = Number(player.last_checked_at) || 0;
       const timeSinceLastMatch = now - lastMatchAt;
       const timeSinceLastCheck = now - lastCheckedAt;
 
-      let interval = 2 * 60 * 1000; // Par défaut 2 min
+      let interval = 2 * 60 * 1000;
       if (lastMatchAt > 0) {
-        if (timeSinceLastMatch > 24 * 60 * 60 * 1000) {
-          interval = 30 * 60 * 1000; // > 24h : 30 min
-        } else if (timeSinceLastMatch > 2 * 60 * 60 * 1000) {
-          interval = 15 * 60 * 1000; // > 2h : 15 min
-        }
+        if (timeSinceLastMatch > 24 * 60 * 60 * 1000)      interval = 30 * 60 * 1000;
+        else if (timeSinceLastMatch > 2 * 60 * 60 * 1000)  interval = 15 * 60 * 1000;
       }
-
       if (timeSinceLastCheck < interval) continue;
 
-      // Mise à jour du timestamp de vérification
-      db.prepare("UPDATE accounts SET last_checked_at = ? WHERE puuid = ?").run(
-        now,
-        player.puuid,
-      );
+      await sql`UPDATE accounts SET last_checked_at = ${now} WHERE puuid = ${player.puuid}`;
 
       console.log(`⏳ Vérification : ${player.game_name}`);
       const axiosConfig = { headers: { "X-Riot-Token": RIOT_API_KEY } };
 
-      // On récupère les 2 derniers matchs
-      const lolMatchUrl = `https://europe.api.riotgames.com/lol/match/v5/matches/by-puuid/${player.puuid}/ids?count=2`;
-      const lolRes = await axios.get(lolMatchUrl, axiosConfig);
+      const lolRes = await axios.get(
+        `https://europe.api.riotgames.com/lol/match/v5/matches/by-puuid/${player.puuid}/ids?count=2`,
+        axiosConfig,
+      );
       const matchIds = lolRes.data || [];
 
-      // Identifier les nouveaux matchs
       let newMatchIds = [];
       if (player.last_match_id) {
         const lastIndex = matchIds.indexOf(player.last_match_id);
-        if (lastIndex === -1) {
-          newMatchIds = matchIds;
-        } else {
-          newMatchIds = matchIds.slice(0, lastIndex);
-        }
+        newMatchIds = lastIndex === -1 ? matchIds : matchIds.slice(0, lastIndex);
       } else if (matchIds.length > 0) {
-        // Premier lancement
-        db.prepare(
-          "UPDATE accounts SET last_match_id = ?, last_match_at = ? WHERE puuid = ?",
-        ).run(
-          matchIds[0],
-          now,
-          player.puuid,
-        );
+        await sql`UPDATE accounts SET last_match_id = ${matchIds[0]}, last_match_at = ${now} WHERE puuid = ${player.puuid}`;
         continue;
       }
 
-      // On traite du plus VIEUX au plus RÉCENT
       newMatchIds.reverse();
 
       for (const matchId of newMatchIds) {
-        const detailUrl = `https://europe.api.riotgames.com/lol/match/v5/matches/${matchId}`;
-        const detRes = await axios.get(detailUrl, axiosConfig);
+        const detRes = await axios.get(
+          `https://europe.api.riotgames.com/lol/match/v5/matches/${matchId}`,
+          axiosConfig,
+        );
         const info = detRes.data.info;
-        const p = info.participants.find((part) => part.puuid === player.puuid);
+        const p    = info.participants.find((part) => part.puuid === player.puuid);
 
-        // Mise à jour immédiate du dernier match traité
-        db.prepare(
-          "UPDATE accounts SET last_match_id = ?, last_match_at = ? WHERE puuid = ?",
-        ).run(matchId, info.gameEndTimestamp, player.puuid);
+        await sql`UPDATE accounts SET last_match_id = ${matchId}, last_match_at = ${info.gameEndTimestamp} WHERE puuid = ${player.puuid}`;
 
         if (!p || info.gameDuration <= 300) continue;
 
-        // Capture la série de défaites AVANT de la réinitialiser (pour le badge COMEBACK)
         const previousLossStreak = player.loss_streak || 0;
-
-        const activeStreak = updateLossStats(player, p.win, p.totalTimeSpentDead);
+        const activeStreak = await updateLossStats(player, p.win, p.totalTimeSpentDead);
 
         let badgeKeysEarned = [];
 
@@ -283,163 +244,103 @@ async function _doCheckMatches(client) {
 
           const rankData = await fetchPlayerRank(player.puuid, info.queueId);
 
-          // On garde toujours le pseudo LoL pour le message principal
           let message = `🚨 [${queueName}] - **${player.game_name}** a perdu avec **${p.championName}** (${p.kills}/${p.deaths}/${p.assists}) en **${min}:${sec}** min.`;
+          if (rankData) message += ` - ${rankData.tier} ${rankData.rank} — ${rankData.lp} LP`;
+          if (activeStreak > 1) message += `\n🔥 Série de défaites : ${activeStreak}`;
 
-          if (rankData) {
-            message += ` - ${rankData.tier} ${rankData.rank} — ${rankData.lp} LP`;
-          }
+          const subs = await sql`
+            SELECT s.channel_id FROM servers s
+            JOIN server_members sm ON sm.server_id = s.id
+            WHERE sm.puuid = ${player.puuid} AND s.mode IN ('negative', 'both')
+          `;
 
-          if (activeStreak > 1) {
-            message += `\n🔥 Série de défaites : ${activeStreak}`;
-          }
+          const tierCol  = tierColumnForRankedQueue(info.queueId);
+          const oldTier  = tierCol && player[tierCol] ? player[tierCol] : null;
+          const newTier  = rankData ? rankData.tier : null;
 
-          // Filtre par mode : les serveurs en mode 'positive' ne reçoivent pas les défaites
-          const subs = db
-            .prepare(`SELECT s.channel_id FROM servers s JOIN server_members sm ON sm.server_id = s.id WHERE sm.puuid = ? AND (s.mode = 'negative' OR s.mode = 'both')`)
-            .all(player.puuid);
-
-          // Palier stocké par file (Solo / Flex) — jamais la même colonne pour deux files différentes
-          const tierCol = tierColumnForRankedQueue(info.queueId);
-          const oldTier =
-            tierCol && player[tierCol] != null && String(player[tierCol]).trim() !== ""
-              ? player[tierCol]
-              : null;
-
-          const newTier = rankData ? rankData.tier : null;
-
-          // Badges négatifs uniquement si le joueur est dans un serveur mode 'negative' ou 'both'
           if (subs.length > 0) {
             let ownedBadgeKeys = [];
             let totalDeadConsolidated = 0;
 
-            if (player.discord_user_id) {
-              ownedBadgeKeys = db.prepare(`
-                SELECT DISTINCT badge_key
-                FROM badges
-                WHERE entity_id IN (SELECT puuid FROM accounts WHERE discord_user_id = ?)
-              `).all(player.discord_user_id).map(b => b.badge_key);
-
-              const rowDead = db.prepare("SELECT SUM(total_time_spent_dead) as sum_dead FROM accounts WHERE discord_user_id = ?").get(player.discord_user_id);
+            if (player.user_id) {
+              const rows = await sql`SELECT DISTINCT badge_key FROM badges WHERE entity_id IN (SELECT puuid FROM accounts WHERE user_id = ${player.user_id})`;
+              ownedBadgeKeys = rows.map((b) => b.badge_key);
+              const [rowDead] = await sql`SELECT SUM(total_time_spent_dead)::int AS sum_dead FROM accounts WHERE user_id = ${player.user_id}`;
               totalDeadConsolidated = rowDead?.sum_dead || 0;
             } else {
-              ownedBadgeKeys = db.prepare("SELECT badge_key FROM badges WHERE entity_id = ?").all(player.puuid).map(b => b.badge_key);
+              const rows = await sql`SELECT badge_key FROM badges WHERE entity_id = ${player.puuid}`;
+              ownedBadgeKeys = rows.map((b) => b.badge_key);
               totalDeadConsolidated = player.total_time_spent_dead || 0;
             }
 
-            // --- BADGE EVALUATION ---
             let triggeredBadges = evaluateTriggeredBadges(p, activeStreak, info, ownedBadgeKeys, totalDeadConsolidated, oldTier, newTier);
-
             if (triggeredBadges.length > 0) {
-              const updatedBadges = [...ownedBadgeKeys, ...triggeredBadges.map(b => b.key)];
-              const secondPass = evaluateTriggeredBadges(p, activeStreak, info, updatedBadges, totalDeadConsolidated, oldTier, newTier);
-              secondPass.forEach(b => {
-                if (!triggeredBadges.find(tb => tb.key === b.key)) {
-                  triggeredBadges.push(b);
-                }
-              });
+              const updatedBadges = [...ownedBadgeKeys, ...triggeredBadges.map((b) => b.key)];
+              const secondPass    = evaluateTriggeredBadges(p, activeStreak, info, updatedBadges, totalDeadConsolidated, oldTier, newTier);
+              secondPass.forEach((b) => { if (!triggeredBadges.find((tb) => tb.key === b.key)) triggeredBadges.push(b); });
             }
 
             const unlockedBadges = [];
             for (const badge of triggeredBadges) {
-              const unlock = registerBadgeUnlock(player.puuid, badge);
-              if (unlock.isNew) {
-                unlockedBadges.push(badge);
-              }
+              const unlock = await registerBadgeUnlock(player.puuid, badge);
+              if (unlock.isNew) unlockedBadges.push(badge);
             }
             if (unlockedBadges.length > 0) {
               message += `\n${await formatBadgeAnnouncement(client, player, unlockedBadges)}`;
             }
-
             badgeKeysEarned = unlockedBadges.map((b) => b.key);
           }
 
-          // Mise à jour du palier pour la file de cette partie uniquement
           if (newTier && tierCol) {
-            db.prepare(`UPDATE accounts SET ${tierCol} = ? WHERE puuid = ?`).run(
-              newTier,
-              player.puuid,
-            );
+            await sql`UPDATE accounts SET ${sql(tierCol)} = ${newTier} WHERE puuid = ${player.puuid}`;
             player[tierCol] = newTier;
           }
 
           if (SKIP_DISCORD_SEND) {
-            console.log(
-              `[SKIP_DISCORD_NOTIFICATIONS] Message non envoyé (${subs.length} salon(s)) :`,
-              String(message).slice(0, 160).replace(/\n/g, " ") + "…",
-            );
+            console.log(`[SKIP] Défaite non envoyée (${subs.length} salon(s)) :`, String(message).slice(0, 160).replace(/\n/g, " ") + "…");
           } else {
             for (const sub of subs) {
-              const chan = await client.channels
-                .fetch(sub.channel_id)
-                .catch(() => null);
+              const chan = await client.channels.fetch(sub.channel_id).catch(() => null);
               if (chan) await chan.send(message);
             }
           }
 
-          // Journal : on duplique l'événement en notifications distinctes pour
-          // que la page Logs puisse les filtrer par type. La défaite garde le
-          // message complet ; chaque badge et chaque palier de streak vit en
-          // entrée séparée pour rester lisible côté UI.
           const ts = info.gameEndTimestamp || Date.now();
-          recordNotification({
-            ts,
-            kind: "loss",
-            accountPuuid: player.puuid,
-            matchId,
+          await recordNotification({
+            ts, kind: "loss", accountPuuid: player.puuid, matchId,
             message: `🚨 [${queueName}] - ${player.game_name} a perdu avec ${p.championName} (${p.kills}/${p.deaths}/${p.assists}) en ${min}:${sec} min.${rankData ? ` - ${rankData.tier} ${rankData.rank} — ${rankData.lp} LP` : ""}`,
-            details: {
-              queueLabel: queueName,
-              accountName: player.game_name,
-              champion: p.championName,
-              kills: p.kills,
-              deaths: p.deaths,
-              assists: p.assists,
-              durationSeconds: info.gameDuration,
-              tier: rankData ? `${rankData.tier} ${rankData.rank}` : null,
-              lp: rankData ? rankData.lp : null,
-              streak: activeStreak,
-            },
+            details: { queueLabel: queueName, accountName: player.game_name, champion: p.championName, kills: p.kills, deaths: p.deaths, assists: p.assists, durationSeconds: info.gameDuration, tier: rankData ? `${rankData.tier} ${rankData.rank}` : null, lp: rankData?.lp ?? null, streak: activeStreak },
           });
 
+          const unlockedBadges = badgeKeysEarned.length > 0
+            ? await sql`SELECT badge_key, badge_key AS key FROM badges WHERE entity_id = ${player.puuid} AND badge_key = ANY(${badgeKeysEarned})`
+            : [];
+
           for (const badge of unlockedBadges) {
-            recordNotification({
-              ts: ts + 1,
-              kind: "badge",
-              accountPuuid: player.puuid,
-              matchId,
-              message: `✨ ${player.game_name} vient de débloquer le badge « ${badge.name} ».`,
-              details: {
-                accountName: player.game_name,
-                badgeKey: badge.key,
-                badgeName: badge.name,
-                badgeRank: badge.rank,
-              },
+            await recordNotification({
+              ts: ts + 1, kind: "badge", accountPuuid: player.puuid, matchId,
+              message: `✨ ${player.game_name} vient de débloquer le badge « ${badge.badge_key} ».`,
+              details: { accountName: player.game_name, badgeKey: badge.badge_key },
             });
           }
 
           if (STREAK_MILESTONES.has(activeStreak)) {
-            recordNotification({
-              ts: ts + 2,
-              kind: "streak",
-              accountPuuid: player.puuid,
-              matchId,
+            await recordNotification({
+              ts: ts + 2, kind: "streak", accountPuuid: player.puuid, matchId,
               message: `🔥 ${player.game_name} enchaîne ${activeStreak} défaites d'affilée.`,
               details: { accountName: player.game_name, streak: activeStreak },
             });
           }
         } else {
-          // Victoire — mise à jour du tier
-          const rankData = await fetchPlayerRank(player.puuid, info.queueId);
-          const winTierCol = tierColumnForRankedQueue(info.queueId);
-          const oldTierWin = winTierCol && player[winTierCol] ? player[winTierCol] : null;
+          const rankData    = await fetchPlayerRank(player.puuid, info.queueId);
+          const winTierCol  = tierColumnForRankedQueue(info.queueId);
+          const oldTierWin  = winTierCol && player[winTierCol] ? player[winTierCol] : null;
           if (rankData && winTierCol) {
-            db.prepare(`UPDATE accounts SET ${winTierCol} = ? WHERE puuid = ?`).run(rankData.tier, player.puuid);
+            await sql`UPDATE accounts SET ${sql(winTierCol)} = ${rankData.tier} WHERE puuid = ${player.puuid}`;
             player[winTierCol] = rankData.tier;
           }
 
-          // Récupération du win_streak actuel (après updateLossStats l'a incrémenté)
-          const winStreakRow = db.prepare("SELECT win_streak FROM accounts WHERE puuid = ?").get(player.puuid);
+          const [winStreakRow] = await sql`SELECT win_streak FROM accounts WHERE puuid = ${player.puuid}`;
           const currentWinStreak = winStreakRow?.win_streak || 0;
 
           const queueName = QUEUE_TYPES[info.queueId] || "Partie";
@@ -450,41 +351,42 @@ async function _doCheckMatches(client) {
           if (rankData) winMessage += ` - ${rankData.tier} ${rankData.rank} — ${rankData.lp} LP`;
           if (currentWinStreak > 1) winMessage += `\n🔥 Série de victoires : ${currentWinStreak}`;
 
-          // Filtre par mode : les serveurs en mode 'negative' ne reçoivent pas les victoires
-          const winSubs = db
-            .prepare(`SELECT s.channel_id FROM servers s JOIN server_members sm ON sm.server_id = s.id WHERE sm.puuid = ? AND (s.mode = 'positive' OR s.mode = 'both')`)
-            .all(player.puuid);
+          const winSubs = await sql`
+            SELECT s.channel_id FROM servers s
+            JOIN server_members sm ON sm.server_id = s.id
+            WHERE sm.puuid = ${player.puuid} AND s.mode IN ('positive', 'both')
+          `;
 
-          // Badges positifs uniquement si le joueur est dans un serveur mode 'positive' ou 'both'
+          const unlockedWinBadges = [];
           if (winSubs.length > 0) {
             let ownedBadgeKeysWin = [];
-            if (player.discord_user_id) {
-              ownedBadgeKeysWin = db.prepare(`SELECT DISTINCT badge_key FROM badges WHERE entity_id IN (SELECT puuid FROM accounts WHERE discord_user_id = ?)`).all(player.discord_user_id).map(b => b.badge_key);
+            if (player.user_id) {
+              const rows = await sql`SELECT DISTINCT badge_key FROM badges WHERE entity_id IN (SELECT puuid FROM accounts WHERE user_id = ${player.user_id})`;
+              ownedBadgeKeysWin = rows.map((b) => b.badge_key);
             } else {
-              ownedBadgeKeysWin = db.prepare("SELECT badge_key FROM badges WHERE entity_id = ?").all(player.puuid).map(b => b.badge_key);
+              const rows = await sql`SELECT badge_key FROM badges WHERE entity_id = ${player.puuid}`;
+              ownedBadgeKeysWin = rows.map((b) => b.badge_key);
             }
 
             let triggeredWinBadges = evaluateTriggeredWinBadges(p, currentWinStreak, info, previousLossStreak, ownedBadgeKeysWin, oldTierWin, rankData?.tier ?? null);
             if (triggeredWinBadges.length > 0) {
-              const updatedKeys = [...ownedBadgeKeysWin, ...triggeredWinBadges.map(b => b.key)];
-              const secondPass = evaluateTriggeredWinBadges(p, currentWinStreak, info, previousLossStreak, updatedKeys, oldTierWin, rankData?.tier ?? null);
-              secondPass.forEach(b => { if (!triggeredWinBadges.find(tb => tb.key === b.key)) triggeredWinBadges.push(b); });
+              const updatedKeys  = [...ownedBadgeKeysWin, ...triggeredWinBadges.map((b) => b.key)];
+              const secondPass   = evaluateTriggeredWinBadges(p, currentWinStreak, info, previousLossStreak, updatedKeys, oldTierWin, rankData?.tier ?? null);
+              secondPass.forEach((b) => { if (!triggeredWinBadges.find((tb) => tb.key === b.key)) triggeredWinBadges.push(b); });
             }
 
-            const unlockedWinBadges = [];
             for (const badge of triggeredWinBadges) {
-              const unlock = registerBadgeUnlock(player.puuid, badge);
+              const unlock = await registerBadgeUnlock(player.puuid, badge);
               if (unlock.isNew) unlockedWinBadges.push(badge);
             }
             if (unlockedWinBadges.length > 0) {
               winMessage += `\n${await formatBadgeAnnouncement(client, player, unlockedWinBadges)}`;
             }
-
-            badgeKeysEarned = unlockedWinBadges.map(b => b.key);
+            badgeKeysEarned = unlockedWinBadges.map((b) => b.key);
           }
 
           if (SKIP_DISCORD_SEND) {
-            console.log(`[SKIP_DISCORD_NOTIFICATIONS] Victoire non envoyée (${winSubs.length} salon(s)) :`, String(winMessage).slice(0, 160).replace(/\n/g, " ") + "…");
+            console.log(`[SKIP] Victoire non envoyée (${winSubs.length} salon(s)) :`, String(winMessage).slice(0, 160).replace(/\n/g, " ") + "…");
           } else {
             for (const sub of winSubs) {
               const chan = await client.channels.fetch(sub.channel_id).catch(() => null);
@@ -493,31 +395,15 @@ async function _doCheckMatches(client) {
           }
 
           const tsWin = info.gameEndTimestamp || Date.now();
-          recordNotification({
-            ts: tsWin,
-            kind: "win",
-            accountPuuid: player.puuid,
-            matchId,
+          await recordNotification({
+            ts: tsWin, kind: "win", accountPuuid: player.puuid, matchId,
             message: `✅ [${queueName}] - ${player.game_name} a gagné avec ${p.championName} (${p.kills}/${p.deaths}/${p.assists}) en ${min}:${sec} min.${rankData ? ` - ${rankData.tier} ${rankData.rank} — ${rankData.lp} LP` : ""}`,
-            details: {
-              queueLabel: queueName,
-              accountName: player.game_name,
-              champion: p.championName,
-              kills: p.kills,
-              deaths: p.deaths,
-              assists: p.assists,
-              durationSeconds: info.gameDuration,
-              tier: rankData ? `${rankData.tier} ${rankData.rank}` : null,
-              streakCount: currentWinStreak,
-            },
+            details: { queueLabel: queueName, accountName: player.game_name, champion: p.championName, kills: p.kills, deaths: p.deaths, assists: p.assists, durationSeconds: info.gameDuration, tier: rankData ? `${rankData.tier} ${rankData.rank}` : null, streakCount: currentWinStreak },
           });
 
           for (const badge of unlockedWinBadges) {
-            recordNotification({
-              ts: tsWin + 1,
-              kind: "badge",
-              accountPuuid: player.puuid,
-              matchId,
+            await recordNotification({
+              ts: tsWin + 1, kind: "badge", accountPuuid: player.puuid, matchId,
               message: `✨ ${player.game_name} vient de débloquer le badge « ${badge.name} ».`,
               details: { accountName: player.game_name, badgeKey: badge.key, badgeName: badge.name, badgeRank: badge.rank },
             });
@@ -525,18 +411,15 @@ async function _doCheckMatches(client) {
 
           const WIN_STREAK_MILESTONES = new Set([5, 10, 15]);
           if (WIN_STREAK_MILESTONES.has(currentWinStreak)) {
-            recordNotification({
-              ts: tsWin + 2,
-              kind: "streak",
-              accountPuuid: player.puuid,
-              matchId,
+            await recordNotification({
+              ts: tsWin + 2, kind: "streak", accountPuuid: player.puuid, matchId,
               message: `🏆 ${player.game_name} enchaîne ${currentWinStreak} victoires d'affilée !`,
               details: { accountName: player.game_name, streakCount: currentWinStreak },
             });
           }
         }
 
-        insertMatchHistory(matchId, player.puuid, p, info, p.win, badgeKeysEarned);
+        await insertMatchHistory(matchId, player.puuid, p, info, p.win, badgeKeysEarned);
       }
     } catch (e) {
       console.error(`❌ Erreur ${player.game_name}: ${e.message}`);
@@ -545,7 +428,4 @@ async function _doCheckMatches(client) {
   }
 }
 
-module.exports = {
-  checkMatches,
-  registerBadgeUnlock,
-};
+module.exports = { checkMatches, registerBadgeUnlock };

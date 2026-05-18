@@ -3,10 +3,8 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "start": "node init_db.js && node index.js",
-    "dev": "NODE_ENV=test node init_db.js && NODE_ENV=test node index.js",
-    "prep:test": "node scripts/prep-test-data.js",
-    "seed:demo": "node scripts/seed-demo-data.js",
+    "start": "node index.js",
+    "dev": "NODE_ENV=test node index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -15,8 +13,8 @@
   "description": "",
   "dependencies": {
     "axios": "^1.15.0",
-    "better-sqlite3": "^12.9.0",
     "discord.js": "^14.26.3",
-    "dotenv": "^17.4.2"
+    "dotenv": "^17.4.2",
+    "postgres": "^3.4.9"
   }
 }

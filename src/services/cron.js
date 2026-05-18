@@ -1,4 +1,4 @@
-const { db } = require("../database");
+const { sql } = require("../database");
 
 const SKIP_DISCORD_SEND =
   process.env.SKIP_DISCORD_NOTIFICATIONS === "1" ||
@@ -9,17 +9,18 @@ async function announceMonthlyStats(client) {
   now.setMonth(now.getMonth() - 1);
   const prevMonthStr = now.toISOString().slice(0, 7);
 
-  const rows = db.prepare(`
-    SELECT 
-      COALESCE(p.discord_user_id, p.game_name || '#' || p.tag_line) as identifier,
-      MAX(p.discord_user_id) as is_discord,
-      SUM(ms.losses) as total_month
+  const rows = await sql`
+    SELECT
+      COALESCE(u.discord_id, a.game_name || '#' || a.tag_line) AS identifier,
+      MAX(u.discord_id) AS discord_id,
+      SUM(ms.losses)::int AS total_month
     FROM monthly_stats ms
-    JOIN accounts p ON p.puuid = ms.puuid
-    WHERE ms.month = ?
-    GROUP BY identifier
+    JOIN accounts a ON a.puuid = ms.puuid
+    LEFT JOIN users u ON u.id = a.user_id
+    WHERE ms.month = ${prevMonthStr}
+    GROUP BY COALESCE(u.discord_id, a.game_name || '#' || a.tag_line)
     ORDER BY total_month DESC
-  `).all(prevMonthStr);
+  `;
 
   if (!rows.length) return;
 
@@ -27,17 +28,17 @@ async function announceMonthlyStats(client) {
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
     let label = `**${r.identifier}**`;
-    if (r.is_discord) {
+    if (r.discord_id) {
       try {
-        const user = client.users.cache.get(r.identifier) || await client.users.fetch(r.identifier);
+        const user = client.users.cache.get(r.discord_id) || await client.users.fetch(r.discord_id);
         label = `**${user.globalName || user.username}**`;
-      } catch { }
+      } catch { /* fallback au pseudo LoL */ }
     }
     msg += `${i + 1}. ${label} : **${r.total_month}** défaites\n`;
   }
   msg += "━━━━━━━━━━━━━━━━━━━━━━━━";
 
-  const channels = db.prepare("SELECT channel_id FROM servers").all();
+  const channels = await sql`SELECT channel_id FROM servers`;
   for (const c of channels) {
     const chan = await client.channels.fetch(c.channel_id).catch(() => null);
     if (!chan) continue;
