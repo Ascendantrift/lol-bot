@@ -5,7 +5,6 @@ const { resolveDiscordLabel, buildLossEmbed, previewEmbed } = require("./embeds"
 const { QUEUE_TYPES, fetchPlayerRank }               = require("./riot");
 const { registerBadgeUnlock }                        = require("./badgeService");
 
-const STREAK_MILESTONES = new Set([3, 5, 10, 15]);
 
 function tierColumnForRankedQueue(queueId) {
   if (queueId === 420) return "last_tier_solo";
@@ -105,7 +104,7 @@ async function handleLoss(client, player, p, info, matchId, activeStreak) {
     }
   }
 
-  if (STREAK_MILESTONES.has(activeStreak)) {
+  if (activeStreak >= 2) {
     await recordNotification({
       ts: ts + 2, kind: "streak", accountPuuid: player.puuid, matchId,
       message: `🔥 ${player.game_name} enchaîne ${activeStreak} défaites d'affilée.`,

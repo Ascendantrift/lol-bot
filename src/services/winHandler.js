@@ -5,7 +5,6 @@ const { resolveDiscordLabel, buildWinEmbed, previewEmbed } = require("./embeds")
 const { QUEUE_TYPES, fetchPlayerRank }              = require("./riot");
 const { registerBadgeUnlock }                       = require("./badgeService");
 
-const WIN_STREAK_MILESTONES = new Set([5, 10, 15]);
 
 function tierColumnForRankedQueue(queueId) {
   if (queueId === 420) return "last_tier_solo";
@@ -97,7 +96,7 @@ async function handleWin(client, player, p, info, matchId, previousLossStreak) {
     });
   }
 
-  if (WIN_STREAK_MILESTONES.has(currentWinStreak)) {
+  if (currentWinStreak >= 2) {
     await recordNotification({
       ts: ts + 2, kind: "streak", accountPuuid: player.puuid, matchId,
       message: `🏆 ${player.game_name} enchaîne ${currentWinStreak} victoires d'affilée !`,
