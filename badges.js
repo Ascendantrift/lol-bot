@@ -46,8 +46,8 @@ const BADGES = [
         "GRANDMASTER",
         "CHALLENGER",
       ];
-      const oldIdx = TIERS.indexOf(oldTier.toUpperCase());
-      const newIdx = TIERS.indexOf(newTier.toUpperCase());
+      const oldIdx = TIERS.indexOf(oldTier.split(" ")[0].toUpperCase());
+      const newIdx = TIERS.indexOf(newTier.split(" ")[0].toUpperCase());
       return oldIdx > -1 && newIdx > -1 && newIdx < oldIdx;
     },
   },
@@ -751,8 +751,8 @@ const WIN_BADGES = [
     trigger: ({ oldTier, newTier }) => {
       if (!oldTier || !newTier || oldTier === "UNRANKED" || newTier === "UNRANKED") return false;
       const TIERS = ["IRON", "BRONZE", "SILVER", "GOLD", "PLATINUM", "EMERALD", "DIAMOND", "MASTER", "GRANDMASTER", "CHALLENGER"];
-      const oldIdx = TIERS.indexOf(oldTier.toUpperCase());
-      const newIdx = TIERS.indexOf(newTier.toUpperCase());
+      const oldIdx = TIERS.indexOf(oldTier.split(" ")[0].toUpperCase());
+      const newIdx = TIERS.indexOf(newTier.split(" ")[0].toUpperCase());
       return oldIdx > -1 && newIdx > -1 && newIdx > oldIdx;
     },
   },

@@ -52,6 +52,27 @@ async function fetchPlayerRank(puuid, queueId) {
   }
 }
 
+/**
+ * Retourne "GOLD IV" (solo > flex) pour l'affichage live. Un seul appel API.
+ * @param {string} puuid
+ * @returns {Promise<string|null>}
+ */
+async function fetchBestRankForLive(puuid) {
+  try {
+    const { data } = await axios.get(
+      `https://euw1.api.riotgames.com/lol/league/v4/entries/by-puuid/${puuid}`,
+      { headers: { "X-Riot-Token": RIOT_API_KEY } },
+    );
+    const solo = data.find((e) => e.queueType === "RANKED_SOLO_5x5");
+    const flex = data.find((e) => e.queueType === "RANKED_FLEX_SR");
+    const entry = solo ?? flex ?? null;
+    if (!entry) return null;
+    return entry.rank ? `${entry.tier} ${entry.rank}` : entry.tier;
+  } catch {
+    return null;
+  }
+}
+
 let championsCache = null;
 let ddragonVersionCache = null;
 
@@ -132,6 +153,7 @@ module.exports = {
   RIOT_API_KEY,
   QUEUE_TYPES,
   fetchPlayerRank,
+  fetchBestRankForLive,
   getChampionName,
   getActiveGameByPuuid,
   getDdragonVersion,

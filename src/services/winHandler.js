@@ -33,8 +33,9 @@ async function handleWin(client, player, p, info, matchId, previousLossStreak) {
   const oldTierWin = winTierCol && player[winTierCol] ? player[winTierCol] : null;
 
   if (rankData && winTierCol) {
-    await sql`UPDATE accounts SET ${sql(winTierCol)} = ${rankData.tier} WHERE puuid = ${player.puuid}`;
-    player[winTierCol] = rankData.tier;
+    const tierFull = rankData.rank ? `${rankData.tier} ${rankData.rank}` : rankData.tier;
+    await sql`UPDATE accounts SET ${sql(winTierCol)} = ${tierFull} WHERE puuid = ${player.puuid}`;
+    player[winTierCol] = tierFull;
   }
 
   const [winStreakRow] = await sql`SELECT win_streak FROM accounts WHERE puuid = ${player.puuid}`;

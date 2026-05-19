@@ -1,5 +1,5 @@
 const { sql } = require("../database");
-const { getActiveGameByPuuid, getChampionName } = require("./riot");
+const { getActiveGameByPuuid, getChampionName, fetchBestRankForLive } = require("./riot");
 
 const LIVE_TTL_MS = 5 * 60 * 1000;
 const SPECTATOR_MIN_INTERVAL_MS = 60 * 1000;
@@ -54,9 +54,19 @@ function extractLiveSnapshot(p) {
 
 async function upsertParticipants(game, serverPuuids) {
   const id = String(game.gameId);
+  const participants = (game.participants || []).filter(Boolean);
 
-  for (const p of game.participants || []) {
-    if (!p) continue;
+  // Fetch ranks in parallel for all participants (only useful on first insert — skipped after)
+  const tierByPuuid = new Map();
+  await Promise.all(
+    participants.map(async (p) => {
+      const puuid = p.puuid || `streamer_${id}_${p.teamId ?? 0}_${p.championId ?? 0}`;
+      const tier = await fetchBestRankForLive(puuid).catch(() => null);
+      if (tier) tierByPuuid.set(puuid, tier);
+    }),
+  );
+
+  for (const p of participants) {
     const puuid = p.puuid || `streamer_${id}_${p.teamId ?? 0}_${p.championId ?? 0}`;
     const championName = p.championId ? await getChampionName(p.championId) : null;
     const sumName =
@@ -64,17 +74,18 @@ async function upsertParticipants(game, serverPuuids) {
       (p.riotId && String(p.riotId).trim()) ||
       "";
     const snap = extractLiveSnapshot(p);
+    const tier = tierByPuuid.get(puuid) ?? null;
 
     await sql`
       INSERT INTO live_participants (
         game_id, puuid, summoner_name, champion_id, champion_name, team_id, is_server,
-        spell1_id, spell2_id, kills, deaths, assists, gold, minions_killed, champion_level, riot_lane
+        spell1_id, spell2_id, kills, deaths, assists, gold, minions_killed, champion_level, riot_lane, tier
       )
       VALUES (
         ${id}, ${puuid}, ${sumName}, ${p.championId ?? null}, ${championName || null},
         ${p.teamId}, ${serverPuuids.has(puuid)},
         ${snap.spell1Id}, ${snap.spell2Id}, ${snap.kills}, ${snap.deaths}, ${snap.assists},
-        ${snap.gold}, ${snap.minionsKilled}, ${snap.championLevel}, ${snap.riotLane}
+        ${snap.gold}, ${snap.minionsKilled}, ${snap.championLevel}, ${snap.riotLane}, ${tier}
       )
       ON CONFLICT (game_id, puuid) DO UPDATE SET
         summoner_name   = EXCLUDED.summoner_name,
@@ -90,7 +101,8 @@ async function upsertParticipants(game, serverPuuids) {
         gold            = EXCLUDED.gold,
         minions_killed  = EXCLUDED.minions_killed,
         champion_level  = EXCLUDED.champion_level,
-        riot_lane       = EXCLUDED.riot_lane
+        riot_lane       = EXCLUDED.riot_lane,
+        tier            = COALESCE(live_participants.tier, EXCLUDED.tier)
     `;
   }
 }

@@ -67,8 +67,9 @@ async function handleLoss(client, player, p, info, matchId, activeStreak) {
 
   // ── Mise à jour du rang ───────────────────────────────────────────────────────
   if (newTier && tierCol) {
-    await sql`UPDATE accounts SET ${sql(tierCol)} = ${newTier} WHERE puuid = ${player.puuid}`;
-    player[tierCol] = newTier;
+    const tierFull = rankData?.rank ? `${newTier} ${rankData.rank}` : newTier;
+    await sql`UPDATE accounts SET ${sql(tierCol)} = ${tierFull} WHERE puuid = ${player.puuid}`;
+    player[tierCol] = tierFull;
   }
 
   // ── Envoi Discord ─────────────────────────────────────────────────────────────
