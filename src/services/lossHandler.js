@@ -4,6 +4,7 @@ const { recordNotification }                         = require("./notifications"
 const { resolveDiscordLabel, buildLossEmbed, previewEmbed } = require("./embeds");
 const { QUEUE_TYPES, fetchPlayerRank }               = require("./riot");
 const { registerBadgeUnlock }                        = require("./badgeService");
+const { awardLoss, awardBadge, resolveBets }         = require("./pointsService");
 
 
 function tierColumnForRankedQueue(queueId) {
@@ -86,31 +87,24 @@ async function handleLoss(client, player, p, info, matchId, activeStreak) {
 
   // ── Notifications web ─────────────────────────────────────────────────────────
   const ts = info.gameEndTimestamp || Date.now();
+  const badgeKeysEarned = unlockedBadges.map((b) => b.key);
+  const badgeSuffix = unlockedBadges.length > 0
+    ? ` | ✨ Badges: ${unlockedBadges.map((b) => b.name).join(", ")}`
+    : "";
+  const streakSuffix = activeStreak >= 2 ? ` | 🔥 ${activeStreak} défaites d'affilée` : "";
+
   await recordNotification({
     ts, kind: "loss", accountPuuid: player.puuid, matchId,
-    message: `🚨 [${queueName}] - ${player.game_name} a perdu avec ${p.championName} (${kda.kills}/${kda.deaths}/${kda.assists}) en ${min}:${sec} min.${rankData ? ` - ${rankData.tier} ${rankData.rank} — ${rankData.lp} LP` : ""}`,
-    details: { queueLabel: queueName, accountName: player.game_name, champion: p.championName, ...kda, durationSeconds: info.gameDuration, tier: rankData ? `${rankData.tier} ${rankData.rank}` : null, lp: rankData?.lp ?? null, streak: activeStreak },
+    message: `🚨 [${queueName}] - ${player.game_name} a perdu avec ${p.championName} (${kda.kills}/${kda.deaths}/${kda.assists}) en ${min}:${sec} min.${rankData ? ` - ${rankData.tier} ${rankData.rank} — ${rankData.lp} LP` : ""}${badgeSuffix}${streakSuffix}`,
+    details: { queueLabel: queueName, accountName: player.game_name, champion: p.championName, ...kda, durationSeconds: info.gameDuration, tier: rankData ? `${rankData.tier} ${rankData.rank}` : null, lp: rankData?.lp ?? null, streak: activeStreak, badgesEarned: unlockedBadges.map((b) => b.name) },
   });
 
-  const badgeKeysEarned = unlockedBadges.map((b) => b.key);
-  if (badgeKeysEarned.length > 0) {
-    const badgesForNotif = await sql`SELECT badge_key FROM badges WHERE entity_id = ${player.puuid} AND badge_key = ANY(${badgeKeysEarned})`;
-    for (const badge of badgesForNotif) {
-      await recordNotification({
-        ts: ts + 1, kind: "badge", accountPuuid: player.puuid, matchId,
-        message: `✨ ${player.game_name} vient de débloquer le badge « ${badge.badge_key} ».`,
-        details: { accountName: player.game_name, badgeKey: badge.badge_key },
-      });
-    }
+  // ── Points & bets ─────────────────────────────────────────────────────────────
+  await awardLoss(player.puuid).catch(() => {});
+  for (const badge of unlockedBadges) {
+    await awardBadge(player.puuid, badge.rank).catch(() => {});
   }
-
-  if (activeStreak >= 2) {
-    await recordNotification({
-      ts: ts + 2, kind: "streak", accountPuuid: player.puuid, matchId,
-      message: `🔥 ${player.game_name} enchaîne ${activeStreak} défaites d'affilée.`,
-      details: { accountName: player.game_name, streak: activeStreak },
-    });
-  }
+  await resolveBets(player.puuid, "loss").catch(() => {});
 
   return badgeKeysEarned;
 }

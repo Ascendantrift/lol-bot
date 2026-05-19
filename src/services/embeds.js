@@ -26,7 +26,7 @@ function buildLossEmbed({ discordLabel, championName, queueName, min, sec, kda, 
 // ─── Victoire ──────────────────────────────────────────────────────────────────
 
 function buildWinEmbed({ discordLabel, championName, queueName, min, sec, kda, rankData, streak, unlockedBadges }) {
-  let description = `✅ [${queueName}] - **${discordLabel}** a gagné avec **${championName}** (${kda.kills}/${kda.deaths}/${kda.assists}) en **${min}:${sec}** min.`;
+  let description = `🏆 [${queueName}] - **${discordLabel}** a gagné avec **${championName}** (${kda.kills}/${kda.deaths}/${kda.assists}) en **${min}:${sec}** min.`;
   if (rankData) description += ` - ${rankData.tier} ${rankData.rank} — ${rankData.lp} LP`;
   if (streak > 1) description += `\n🔥 Série de victoires : ${streak}`;
 
