@@ -1,4 +1,7 @@
 const { sql } = require("../database");
+const { recordNotification } = require("./notifications");
+
+const BET_MULTIPLIER = 1.8;
 
 const POINTS = {
   win:           15,
@@ -52,9 +55,13 @@ async function awardBadge(puuid, badgeRank) {
 
 async function resolveBets(puuid, outcome) {
   const pending = await sql`
-    SELECT id, bettor_user_id, prediction, amount
-    FROM bets
-    WHERE target_puuid = ${puuid} AND status = 'pending'
+    SELECT
+      b.id, b.bettor_user_id, b.prediction, b.amount,
+      t.game_name AS target_name,
+      (SELECT a.puuid FROM accounts a WHERE a.user_id = b.bettor_user_id::int ORDER BY a.id LIMIT 1) AS bettor_puuid
+    FROM bets b
+    JOIN accounts t ON t.puuid = b.target_puuid
+    WHERE b.target_puuid = ${puuid} AND b.status = 'pending'
   `;
   if (pending.length === 0) return;
 
@@ -64,8 +71,11 @@ async function resolveBets(puuid, outcome) {
     const status = won ? "won" : "lost";
     await sql`UPDATE bets SET status = ${status}, resolved_at = ${now} WHERE id = ${bet.id}`;
 
+    const targetName = bet.target_name || "ce joueur";
+    const predLabel = bet.prediction === "win" ? "victoire" : "défaite";
+
     if (won) {
-      const reward = Math.floor(bet.amount * 1.8);
+      const reward = Math.floor(bet.amount * BET_MULTIPLIER);
       await sql`
         INSERT INTO user_points (user_id, points, total_earned)
         VALUES (
@@ -83,6 +93,21 @@ async function resolveBets(puuid, outcome) {
           ${reward}, 'bet_win'
         )
       `;
+      await recordNotification({
+        ts: now,
+        kind: "bet_won",
+        accountPuuid: bet.bettor_puuid,
+        message: `🎲 Pari gagné sur ${targetName} (${predLabel}) — +${reward} pts`,
+        details: { betId: bet.id, targetName, prediction: bet.prediction, amount: bet.amount, reward },
+      });
+    } else {
+      await recordNotification({
+        ts: now,
+        kind: "bet_lost",
+        accountPuuid: bet.bettor_puuid,
+        message: `🎲 Pari perdu sur ${targetName} (${predLabel}) — ${bet.amount} pts perdus`,
+        details: { betId: bet.id, targetName, prediction: bet.prediction, amount: bet.amount },
+      });
     }
   }
 }
