@@ -89,16 +89,29 @@ async function handleLoss(client, player, p, info, matchId, activeStreak) {
   // ── Notifications web ─────────────────────────────────────────────────────────
   const ts = info.gameEndTimestamp || Date.now();
   const badgeKeysEarned = unlockedBadges.map((b) => b.key);
-  const badgeSuffix = unlockedBadges.length > 0
-    ? ` | ✨ Badges: ${unlockedBadges.map((b) => b.name).join(", ")}`
-    : "";
-  const streakSuffix = activeStreak >= 2 ? ` | 🔥 ${activeStreak} défaites d'affilée` : "";
+  const baseDetails = { queueLabel: queueName, accountName: player.game_name, champion: p.championName, ...kda, durationSeconds: info.gameDuration, tier: rankData ? `${rankData.tier} ${rankData.rank}` : null, lp: rankData?.lp ?? null };
 
   await recordNotification({
     ts, kind: "loss", accountPuuid: player.puuid, matchId,
-    message: `🚨 [${queueName}] - ${player.game_name} a perdu avec ${p.championName} (${kda.kills}/${kda.deaths}/${kda.assists}) en ${min}:${sec} min.${rankData ? ` - ${rankData.tier} ${rankData.rank} — ${rankData.lp} LP` : ""}${badgeSuffix}${streakSuffix}`,
-    details: { queueLabel: queueName, accountName: player.game_name, champion: p.championName, ...kda, durationSeconds: info.gameDuration, tier: rankData ? `${rankData.tier} ${rankData.rank}` : null, lp: rankData?.lp ?? null, streak: activeStreak, badgesEarned: unlockedBadges.map((b) => b.name) },
+    message: `🚨 [${queueName}] - ${player.game_name} a perdu avec ${p.championName} (${kda.kills}/${kda.deaths}/${kda.assists}) en ${min}:${sec} min.${rankData ? ` - ${rankData.tier} ${rankData.rank} — ${rankData.lp} LP` : ""}`,
+    details: baseDetails,
   });
+
+  if (activeStreak >= 2) {
+    await recordNotification({
+      ts, kind: "streak", accountPuuid: player.puuid, matchId,
+      message: `🔥 ${player.game_name} enchaîne ${activeStreak} défaites d'affilée.`,
+      details: { ...baseDetails, streakCount: activeStreak },
+    });
+  }
+
+  for (const badge of unlockedBadges) {
+    await recordNotification({
+      ts, kind: "badge", accountPuuid: player.puuid, matchId,
+      message: `✨ ${player.game_name} vient de débloquer le badge « ${badge.name} ».`,
+      details: { ...baseDetails, badgeKey: badge.key, badgeName: badge.name, badgeRank: badge.rank },
+    });
+  }
 
   // ── Points & bets ─────────────────────────────────────────────────────────────
   await awardLoss(player.puuid).catch(() => {});

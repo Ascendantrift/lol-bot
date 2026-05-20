@@ -84,16 +84,29 @@ async function handleWin(client, player, p, info, matchId, previousLossStreak) {
 
   // ── Notifications web ─────────────────────────────────────────────────────────
   const ts = info.gameEndTimestamp || Date.now();
-  const badgeSuffix = unlockedBadges.length > 0
-    ? ` | ✨ Badges: ${unlockedBadges.map((b) => b.name).join(", ")}`
-    : "";
-  const streakSuffix = currentWinStreak >= 2 ? ` | 🏆 ${currentWinStreak} victoires d'affilée` : "";
+  const baseDetails = { queueLabel: queueName, accountName: player.game_name, champion: p.championName, ...kda, durationSeconds: info.gameDuration, tier: rankData ? `${rankData.tier} ${rankData.rank}` : null, lp: rankData?.lp ?? null };
 
   await recordNotification({
     ts, kind: "win", accountPuuid: player.puuid, matchId,
-    message: `🏆 [${queueName}] - ${player.game_name} a gagné avec ${p.championName} (${kda.kills}/${kda.deaths}/${kda.assists}) en ${min}:${sec} min.${rankData ? ` - ${rankData.tier} ${rankData.rank} — ${rankData.lp} LP` : ""}${badgeSuffix}${streakSuffix}`,
-    details: { queueLabel: queueName, accountName: player.game_name, champion: p.championName, ...kda, durationSeconds: info.gameDuration, tier: rankData ? `${rankData.tier} ${rankData.rank}` : null, lp: rankData?.lp ?? null, streakCount: currentWinStreak, badgesEarned: unlockedBadges.map((b) => b.name) },
+    message: `🏆 [${queueName}] - ${player.game_name} a gagné avec ${p.championName} (${kda.kills}/${kda.deaths}/${kda.assists}) en ${min}:${sec} min.${rankData ? ` - ${rankData.tier} ${rankData.rank} — ${rankData.lp} LP` : ""}`,
+    details: baseDetails,
   });
+
+  if (currentWinStreak >= 2) {
+    await recordNotification({
+      ts, kind: "streak", accountPuuid: player.puuid, matchId,
+      message: `🏆 ${player.game_name} enchaîne ${currentWinStreak} victoires d'affilée.`,
+      details: { ...baseDetails, streakCount: currentWinStreak },
+    });
+  }
+
+  for (const badge of unlockedBadges) {
+    await recordNotification({
+      ts, kind: "badge", accountPuuid: player.puuid, matchId,
+      message: `✨ ${player.game_name} vient de débloquer le badge « ${badge.name} ».`,
+      details: { ...baseDetails, badgeKey: badge.key, badgeName: badge.name, badgeRank: badge.rank },
+    });
+  }
 
   // ── Points & bets ─────────────────────────────────────────────────────────────
   await awardWin(player.puuid, currentWinStreak).catch(() => {});
