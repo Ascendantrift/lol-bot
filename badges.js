@@ -1,7 +1,6 @@
 const QUEUES = {
   SR: [400, 420, 430, 440, 490], // Normal Draft, SoloQ, Blind, Flex, Quickplay
   ARAM: [450],
-  ARENA: [1700],
 };
 
 const BADGES = [

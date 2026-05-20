@@ -12,8 +12,6 @@ const QUEUE_TYPES = {
   490: "Quickplay",
   700: "Clash",
   720: "ARAM Clash",
-  1700: "Arena",
-  1710: "Arena (16p)",
   1900: "URF",
   2400: "ARAM Chaos",
 };
