@@ -54,7 +54,19 @@ async function updateLossStats(player, isWin, timeSpentDead = 0) {
 
 // ─── Historique de match ────────────────────────────────────────────────────────
 
-async function insertMatchHistory(matchId, puuid, participant, info, win, badgeKeys) {
+const TIER_BASE_LP = { IRON: 0, BRONZE: 4, SILVER: 8, GOLD: 12, PLATINUM: 16, EMERALD: 20, DIAMOND: 24, MASTER: 28, GRANDMASTER: 29, CHALLENGER: 30 };
+const DIV_LP = { IV: 0, III: 1, II: 2, I: 3 };
+
+function computeNormalizedLp(rankData) {
+  if (!rankData || !rankData.tier) return null;
+  const tierKey = rankData.tier.toUpperCase();
+  const base = TIER_BASE_LP[tierKey];
+  if (base === undefined) return null;
+  const div = DIV_LP[rankData.rank?.toUpperCase()] ?? 0;
+  return (base + div) * 100 + (rankData.lp ?? 0);
+}
+
+async function insertMatchHistory(matchId, puuid, participant, info, win, badgeKeys, lpNormalized = null) {
   try {
     const playedAt    = new Date(info.gameEndTimestamp).toISOString();
     const badgesJson  = Array.isArray(badgeKeys) && badgeKeys.length > 0 ? JSON.stringify(badgeKeys) : null;
@@ -62,14 +74,14 @@ async function insertMatchHistory(matchId, puuid, participant, info, win, badgeK
     await sql`
       INSERT INTO match_history (
         id, puuid, champion_name, kills, deaths, assists,
-        duration_seconds, queue_id, played_at, win, badges_json, time_spent_dead_seconds, team_position
+        duration_seconds, queue_id, played_at, win, badges_json, time_spent_dead_seconds, team_position, lp_normalized
       ) VALUES (
         ${matchId}, ${puuid}, ${participant.championName},
         ${participant.kills}, ${participant.deaths}, ${participant.assists},
         ${info.gameDuration}, ${info.queueId}, ${playedAt}, ${win},
         ${badgesJson},
         ${typeof participant.totalTimeSpentDead === "number" ? participant.totalTimeSpentDead : 0},
-        ${teamPos}
+        ${teamPos}, ${lpNormalized}
       )
       ON CONFLICT (id, puuid) DO UPDATE SET
         champion_name           = EXCLUDED.champion_name,
@@ -82,7 +94,8 @@ async function insertMatchHistory(matchId, puuid, participant, info, win, badgeK
         win                     = EXCLUDED.win,
         badges_json             = EXCLUDED.badges_json,
         time_spent_dead_seconds = EXCLUDED.time_spent_dead_seconds,
-        team_position           = EXCLUDED.team_position
+        team_position           = EXCLUDED.team_position,
+        lp_normalized           = COALESCE(EXCLUDED.lp_normalized, match_history.lp_normalized)
     `;
   } catch (e) {
     console.error("match_history:", e.message);
@@ -128,8 +141,10 @@ async function _doCheckMatches(client) {
       console.log(`⏳ Vérification : ${player.game_name}`);
 
       const axiosConfig = { headers: { "X-Riot-Token": RIOT_API_KEY } };
+      // count=10 pour ne pas rater les parties si le joueur en enchaîne plusieurs
+      // entre deux checks (intervalle 2 min)
       const lolRes = await axios.get(
-        `https://europe.api.riotgames.com/lol/match/v5/matches/by-puuid/${player.puuid}/ids?count=2`,
+        `https://europe.api.riotgames.com/lol/match/v5/matches/by-puuid/${player.puuid}/ids?count=10`,
         axiosConfig,
       );
       const matchIds = lolRes.data || [];
@@ -153,20 +168,31 @@ async function _doCheckMatches(client) {
         const info = detRes.data.info;
         const p    = info.participants.find((part) => part.puuid === player.puuid);
 
+        // Toujours avancer last_match_id (même remake) pour ne pas reboucler
         await sql`UPDATE accounts SET last_match_id = ${matchId}, last_match_at = ${info.gameEndTimestamp} WHERE puuid = ${player.puuid}`;
         if (!p || info.gameDuration <= 300) continue;
 
-        const previousLossStreak = player.loss_streak || 0;
-        const activeStreak       = await updateLossStats(player, p.win, p.totalTimeSpentDead);
-
         let badgeKeysEarned = [];
-        if (!p.win) {
-          badgeKeysEarned = await handleLoss(client, player, p, info, matchId, activeStreak);
-        } else {
-          badgeKeysEarned = await handleWin(client, player, p, info, matchId, previousLossStreak);
+        let lpNormalized = null;
+        try {
+          const previousLossStreak = player.loss_streak || 0;
+          const activeStreak       = await updateLossStats(player, p.win, p.totalTimeSpentDead);
+
+          if (!p.win) {
+            const result = await handleLoss(client, player, p, info, matchId, activeStreak);
+            badgeKeysEarned = result.badgeKeys ?? result;
+            lpNormalized = result.lpNormalized ?? null;
+          } else {
+            const result = await handleWin(client, player, p, info, matchId, previousLossStreak);
+            badgeKeysEarned = result.badgeKeys ?? result;
+            lpNormalized = result.lpNormalized ?? null;
+          }
+        } catch (matchErr) {
+          console.error(`❌ Traitement match ${matchId} pour ${player.game_name}: ${matchErr.message}`);
         }
 
-        await insertMatchHistory(matchId, player.puuid, p, info, p.win, badgeKeysEarned);
+        // insertMatchHistory est toujours appelé même si le traitement a planté
+        await insertMatchHistory(matchId, player.puuid, p, info, p.win, badgeKeysEarned, lpNormalized);
       }
     } catch (e) {
       console.error(`❌ Erreur ${player.game_name}: ${e.message}`);

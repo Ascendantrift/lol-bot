@@ -34,7 +34,10 @@ async function handleWin(client, player, p, info, matchId, previousLossStreak) {
 
   if (rankData && winTierCol) {
     const tierFull = rankData.rank ? `${rankData.tier} ${rankData.rank}` : rankData.tier;
-    await sql`UPDATE accounts SET ${sql(winTierCol)} = ${tierFull} WHERE puuid = ${player.puuid}`;
+    const wCol = info.queueId === 420 ? "wins_solo" : "wins_flex";
+    const lCol = info.queueId === 420 ? "losses_solo" : "losses_flex";
+    const lpCol = info.queueId === 420 ? "lp_solo" : "lp_flex";
+    await sql`UPDATE accounts SET ${sql(winTierCol)} = ${tierFull}, ${sql(wCol)} = ${rankData.wins ?? 0}, ${sql(lCol)} = ${rankData.losses ?? 0}, ${sql(lpCol)} = ${rankData.lp ?? 0} WHERE puuid = ${player.puuid}`;
     player[winTierCol] = tierFull;
   }
 
@@ -115,7 +118,16 @@ async function handleWin(client, player, p, info, matchId, previousLossStreak) {
   }
   await resolveBets(player.puuid, "win").catch(() => {});
 
-  return unlockedBadges.map((b) => b.key);
+  const lpNormalized = (() => {
+    if (!rankData) return null;
+    const TIER_BASE = { IRON: 0, BRONZE: 4, SILVER: 8, GOLD: 12, PLATINUM: 16, EMERALD: 20, DIAMOND: 24, MASTER: 28, GRANDMASTER: 29, CHALLENGER: 30 };
+    const DIV = { IV: 0, III: 1, II: 2, I: 3 };
+    const base = TIER_BASE[rankData.tier?.toUpperCase()];
+    if (base === undefined) return null;
+    const div = DIV[rankData.rank?.toUpperCase()] ?? 0;
+    return (base + div) * 100 + (rankData.lp ?? 0);
+  })();
+  return { badgeKeys: unlockedBadges.map((b) => b.key), lpNormalized };
 }
 
 module.exports = { handleWin };

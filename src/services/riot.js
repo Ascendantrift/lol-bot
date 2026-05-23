@@ -39,6 +39,8 @@ async function fetchPlayerRank(puuid, queueId) {
       tier: entry.tier,
       rank: entry.rank,
       lp: entry.leaguePoints,
+      wins: entry.wins ?? 0,
+      losses: entry.losses ?? 0,
     };
   } catch (e) {
     if (e.response?.status === 403) {
@@ -141,7 +143,7 @@ async function getChampionName(championId) {
   }
   for (const key in championsCache) {
     if (championsCache[key].key == championId) {
-      return championsCache[key].name;
+      return key; // Data Dragon image key (e.g. "TahmKench", "MonkeyKing")
     }
   }
   return "Inconnu";
