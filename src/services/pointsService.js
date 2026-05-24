@@ -58,9 +58,9 @@ async function resolveBets(puuid, outcome) {
     SELECT
       b.id, b.bettor_user_id, b.prediction, b.amount,
       t.game_name AS target_name,
-      (SELECT a.puuid FROM accounts a WHERE a.user_id = b.bettor_user_id::int ORDER BY a.id LIMIT 1) AS bettor_puuid
+      (SELECT a.puuid FROM accounts a WHERE a.user_id::text = b.bettor_user_id ORDER BY a.id LIMIT 1) AS bettor_puuid
     FROM bets b
-    JOIN accounts t ON t.puuid = b.target_puuid
+    LEFT JOIN accounts t ON t.puuid = b.target_puuid
     WHERE b.target_puuid = ${puuid} AND b.status = 'pending'
   `;
   if (pending.length === 0) return;
@@ -76,23 +76,22 @@ async function resolveBets(puuid, outcome) {
 
     if (won) {
       const reward = Math.floor(bet.amount * BET_MULTIPLIER);
-      await sql`
-        INSERT INTO user_points (user_id, points, total_earned)
-        VALUES (
-          (SELECT puuid FROM accounts WHERE user_id = ${bet.bettor_user_id}::int ORDER BY id LIMIT 1),
-          ${reward}, ${reward}
-        )
-        ON CONFLICT (user_id) DO UPDATE SET
-          points = user_points.points + ${reward},
-          total_earned = user_points.total_earned + ${reward}
-      `;
-      await sql`
-        INSERT INTO point_transactions (user_id, amount, reason)
-        VALUES (
-          (SELECT puuid FROM accounts WHERE user_id = ${bet.bettor_user_id}::int ORDER BY id LIMIT 1),
-          ${reward}, 'bet_win'
-        )
-      `;
+      const bettor_puuid = bet.bettor_puuid;
+      if (!bettor_puuid) {
+        console.error(`[resolveBets] Pas de puuid trouvé pour bettor_user_id=${bet.bettor_user_id}, pari id=${bet.id}`);
+      } else {
+        await sql`
+          INSERT INTO user_points (user_id, points, total_earned)
+          VALUES (${bettor_puuid}, ${reward}, ${reward})
+          ON CONFLICT (user_id) DO UPDATE SET
+            points = user_points.points + ${reward},
+            total_earned = user_points.total_earned + ${reward}
+        `;
+        await sql`
+          INSERT INTO point_transactions (user_id, amount, reason)
+          VALUES (${bettor_puuid}, ${reward}, 'bet_win')
+        `;
+      }
       await recordNotification({
         ts: now,
         kind: "bet_won",

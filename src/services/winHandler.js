@@ -116,7 +116,7 @@ async function handleWin(client, player, p, info, matchId, previousLossStreak) {
   for (const badge of unlockedBadges) {
     await awardBadge(player.puuid, badge.rank).catch(() => {});
   }
-  await resolveBets(player.puuid, "win").catch(() => {});
+  await resolveBets(player.puuid, "win").catch((e) => console.error(`[resolveBets] win ${player.game_name}: ${e.message}`));
 
   const lpNormalized = (() => {
     if (!rankData) return null;

@@ -121,7 +121,7 @@ async function handleLoss(client, player, p, info, matchId, activeStreak) {
   for (const badge of unlockedBadges) {
     await awardBadge(player.puuid, badge.rank).catch(() => {});
   }
-  await resolveBets(player.puuid, "loss").catch(() => {});
+  await resolveBets(player.puuid, "loss").catch((e) => console.error(`[resolveBets] loss ${player.game_name}: ${e.message}`));
 
   const lpNormalized = (() => {
     if (!rankData) return null;
