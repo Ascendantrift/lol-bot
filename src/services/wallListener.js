@@ -29,6 +29,13 @@ const WALL_INSULTS = [
   "boulet", "boulets",
   "cancer", "cancre",
   "noob", "nub", "newb",
+  "de mort", "mort", "mortel", "mortelle",
+  "horrible", "atroce", "catastrophe", "catastrophique",
+  "casse les pieds", "casse pieds", "cassepied", "cassepieds",
+  "ras le bol", "ras-le-bol", "raslebol", "j'en peux plus", "jen peux plus",
+  "flan", "flanelle", "bidon", "de la merde",
+  "chiant", "chiante", "gonflant", "gonflante", "saoul", "saoul de",
+  "pire", "le pire", "c'est le pire", "vraiment le pire",
   "exploser", "explose", "explosé", "explosee", "xplose", "xploser",
   "il explose", "tu exploses", "fait exploser", "fais exploser",
   "ta mere", "ta mère", "ta mer", "tamere", "ta.mere",
@@ -51,9 +58,12 @@ function buildRegex(word) {
 
 const INSULT_REGEXES = WALL_INSULTS.map((w) => buildRegex(norm(w)));
 
+// Détecte "bot" comme mot entier (pas dans "robot", "chatbot"...)
+const BOT_WORD_REGEX = /(?<![a-z0-9])bot(?![a-z0-9])/;
+
 function containsBotInsult(text, mentionsBot = false) {
   const lower = norm(text);
-  const targetsBot = mentionsBot || lower.includes("le bot");
+  const targetsBot = mentionsBot || BOT_WORD_REGEX.test(lower);
   if (!targetsBot) return false;
   return INSULT_REGEXES.some((re) => re.test(lower));
 }
