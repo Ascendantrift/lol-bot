@@ -26,7 +26,14 @@ async function seedBadgeDefinitions(sql) {
     const result = await sql`
       INSERT INTO badge_definitions (id, name, description, rank, version, repeatable, queues_json, glyph, valence)
       VALUES (${b.key}, ${b.name}, ${b.description}, ${b.rank}, ${b.version ?? 1}, ${b.repeatable !== false}, ${queuesJson}, ${glyph}, ${valence}::valence)
-      ON CONFLICT (id) DO UPDATE SET valence = EXCLUDED.valence
+      ON CONFLICT (id) DO UPDATE SET
+        name        = EXCLUDED.name,
+        description = EXCLUDED.description,
+        rank        = EXCLUDED.rank,
+        version     = EXCLUDED.version,
+        repeatable  = EXCLUDED.repeatable,
+        queues_json = EXCLUDED.queues_json,
+        valence     = EXCLUDED.valence
       RETURNING (xmax = 0) AS is_insert
     `;
     if (result[0]?.is_insert) inserted++;

@@ -4,12 +4,19 @@ const { recordNotification } = require("./notifications");
 const BET_MULTIPLIER = 1.8;
 
 const POINTS = {
-  win:           15,
-  loss:           5,
+  // Gains win/loss selon le mode du serveur
+  win_positive:  30,  // mode victoire → gros bonus sur les wins
+  win_both:      20,  // mode équilibré
+  win_negative:  10,  // mode défaite → petit gain sur les wins
+  loss_negative: 30,  // mode défaite → gros bonus sur les losses
+  loss_both:     20,  // mode équilibré
+  loss_positive: 10,  // mode victoire → petit gain sur les losses
+  // Badges
   badge_bronze:  10,
   badge_silver:  20,
   badge_gold:    35,
   badge_secret:  75,
+  // Séries de victoires
   streak_3:      20,
   streak_5:      50,
 };
@@ -33,14 +40,41 @@ async function getUserPoints(puuid) {
   return row ?? { points: 0, total_earned: 0 };
 }
 
+// Retourne le mode agrégé du joueur parmi tous ses serveurs
+async function getPlayerMode(puuid) {
+  const rows = await sql`
+    SELECT DISTINCT s.mode FROM servers s
+    JOIN server_members sm ON sm.server_id = s.id
+    WHERE sm.puuid = ${puuid}
+  `;
+  if (rows.length === 0) return "both";
+  if (rows.some((r) => r.mode === "both")) return "both";
+  const hasPos = rows.some((r) => r.mode === "positive");
+  const hasNeg = rows.some((r) => r.mode === "negative");
+  if (hasPos && hasNeg) return "both";
+  if (hasPos) return "positive";
+  if (hasNeg) return "negative";
+  return "both";
+}
+
 async function awardWin(puuid, winStreak) {
-  await addPoints(puuid, POINTS.win, "win");
+  const mode = await getPlayerMode(puuid);
+  const pts =
+    mode === "positive" ? POINTS.win_positive :
+    mode === "negative" ? POINTS.win_negative :
+    POINTS.win_both;
+  await addPoints(puuid, pts, "win");
   if (winStreak >= 5) await addPoints(puuid, POINTS.streak_5, "streak");
   else if (winStreak >= 3) await addPoints(puuid, POINTS.streak_3, "streak");
 }
 
 async function awardLoss(puuid) {
-  await addPoints(puuid, POINTS.loss, "loss");
+  const mode = await getPlayerMode(puuid);
+  const pts =
+    mode === "negative" ? POINTS.loss_negative :
+    mode === "positive" ? POINTS.loss_positive :
+    POINTS.loss_both;
+  await addPoints(puuid, pts, "loss");
 }
 
 async function awardBadge(puuid, badgeRank) {

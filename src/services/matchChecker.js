@@ -171,6 +171,7 @@ async function _doCheckMatches(client) {
         // Toujours avancer last_match_id (même remake) pour ne pas reboucler
         await sql`UPDATE accounts SET last_match_id = ${matchId}, last_match_at = ${info.gameEndTimestamp} WHERE puuid = ${player.puuid}`;
         if (!p || info.gameDuration <= 300) continue;
+        if (info.queueId === 1700 || info.queueId === 1710 || (info.gameMode || "").toUpperCase() === "CHERRY") continue;
 
         let badgeKeysEarned = [];
         let lpNormalized = null;
