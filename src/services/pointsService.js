@@ -4,7 +4,9 @@ const { recordNotification } = require("./notifications");
 const BET_MULTIPLIER = 1.8;
 
 const POINTS = {
-  // Gains win/loss selon le mode du serveur
+  // Participation à une partie (win ou loss)
+  game_played:   100,
+  // Bonus win/loss selon le mode du serveur (en plus des 100 de base)
   win_positive:  30,  // mode victoire → gros bonus sur les wins
   win_both:      20,  // mode équilibré
   win_negative:  10,  // mode défaite → petit gain sur les wins
@@ -58,6 +60,7 @@ async function getPlayerMode(puuid) {
 }
 
 async function awardWin(puuid, winStreak) {
+  await addPoints(puuid, POINTS.game_played, "game_played");
   const mode = await getPlayerMode(puuid);
   const pts =
     mode === "positive" ? POINTS.win_positive :
@@ -69,6 +72,7 @@ async function awardWin(puuid, winStreak) {
 }
 
 async function awardLoss(puuid) {
+  await addPoints(puuid, POINTS.game_played, "game_played");
   const mode = await getPlayerMode(puuid);
   const pts =
     mode === "negative" ? POINTS.loss_negative :
@@ -99,6 +103,8 @@ async function resolveBets(puuid, outcome) {
   `;
   if (pending.length === 0) return;
 
+  console.log(`[resolveBets] ${pending.length} pari(s) à résoudre pour puuid=${puuid} outcome=${outcome}`);
+
   const now = Date.now();
   for (const bet of pending) {
     const won = bet.prediction === outcome;
@@ -110,38 +116,41 @@ async function resolveBets(puuid, outcome) {
 
     if (won) {
       const reward = Math.floor(bet.amount * BET_MULTIPLIER);
-      const bettor_puuid = bet.bettor_puuid;
-      if (!bettor_puuid) {
-        console.error(`[resolveBets] Pas de puuid trouvé pour bettor_user_id=${bet.bettor_user_id}, pari id=${bet.id}`);
-      } else {
-        await sql`
-          INSERT INTO user_points (user_id, points, total_earned)
-          VALUES (${bettor_puuid}, ${reward}, ${reward})
-          ON CONFLICT (user_id) DO UPDATE SET
-            points = user_points.points + ${reward},
-            total_earned = user_points.total_earned + ${reward}
-        `;
-        await sql`
-          INSERT INTO point_transactions (user_id, amount, reason)
-          VALUES (${bettor_puuid}, ${reward}, 'bet_win')
-        `;
+      // Prefer awarding to bettor's PUUID (used by the web app point system).
+      // Fall back to bettor_user_id (integer stored as text) if no linked account found.
+      const pointsKey = bet.bettor_puuid || bet.bettor_user_id;
+      if (!bet.bettor_puuid) {
+        console.warn(`[resolveBets] Pas de puuid pour bettor_user_id=${bet.bettor_user_id} — crédit sur user_id directement`);
       }
-      await recordNotification({
-        ts: now,
-        kind: "bet_won",
-        accountPuuid: bet.bettor_puuid,
-        message: `🎲 Pari gagné sur ${targetName} (${predLabel}) — +${reward} pts`,
-        details: { betId: bet.id, targetName, prediction: bet.prediction, amount: bet.amount, reward },
-      });
+      await sql`
+        INSERT INTO user_points (user_id, points, total_earned)
+        VALUES (${pointsKey}, ${reward}, ${reward})
+        ON CONFLICT (user_id) DO UPDATE SET
+          points       = user_points.points + ${reward},
+          total_earned = user_points.total_earned + ${reward}
+      `;
+      await sql`
+        INSERT INTO point_transactions (user_id, amount, reason)
+        VALUES (${pointsKey}, ${reward}, 'bet_win')
+      `;
+      console.log(`[resolveBets] Pari #${bet.id} GAGNÉ — +${reward} pts crédités sur ${pointsKey}`);
     } else {
-      await recordNotification({
-        ts: now,
-        kind: "bet_lost",
-        accountPuuid: bet.bettor_puuid,
-        message: `🎲 Pari perdu sur ${targetName} (${predLabel}) — ${bet.amount} pts perdus`,
-        details: { betId: bet.id, targetName, prediction: bet.prediction, amount: bet.amount },
-      });
+      console.log(`[resolveBets] Pari #${bet.id} PERDU — ${bet.amount} pts perdus`);
     }
+
+    await recordNotification({
+      ts: now,
+      kind: won ? "bet_won" : "bet_lost",
+      accountPuuid: bet.bettor_puuid ?? null,
+      message: won
+        ? `🎲 Pari gagné sur ${targetName} (${predLabel}) — +${Math.floor(bet.amount * BET_MULTIPLIER)} pts`
+        : `🎲 Pari perdu sur ${targetName} (${predLabel}) — ${bet.amount} pts perdus`,
+      details: {
+        betId: bet.id, targetName, prediction: bet.prediction,
+        amount: bet.amount,
+        ...(won ? { reward: Math.floor(bet.amount * BET_MULTIPLIER) } : {}),
+      },
+    });
   }
 }
 
