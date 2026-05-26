@@ -35,10 +35,9 @@ for (const file of commandFiles) {
   }
 }
 
-startMatchDetailServer();
-
 client.once("clientReady", async () => {
   await ensureReady();
+  startMatchDetailServer(client);
 
   // Nettoyage des comptes orphelins
   await sql`DELETE FROM accounts WHERE puuid NOT IN (SELECT DISTINCT puuid FROM server_members)`;

@@ -23,22 +23,31 @@ const POINTS = {
   streak_5:      50,
 };
 
+async function resolveUserId(puuid) {
+  const [row] = await sql`SELECT user_id FROM accounts WHERE puuid = ${puuid} AND user_id IS NOT NULL LIMIT 1`;
+  return row?.user_id ?? null;
+}
+
 async function addPoints(puuid, amount, reason) {
+  const userId = await resolveUserId(puuid);
+  if (!userId) return; // Compte sans utilisateur Discord → pas de points
   await sql`
     INSERT INTO user_points (user_id, points, total_earned)
-    VALUES (${puuid}, ${amount}, ${amount})
+    VALUES (${userId}, ${amount}, ${Math.max(0, amount)})
     ON CONFLICT (user_id) DO UPDATE SET
-      points      = user_points.points + ${amount},
+      points       = user_points.points + ${amount},
       total_earned = user_points.total_earned + ${Math.max(0, amount)}
   `;
   await sql`
     INSERT INTO point_transactions (user_id, amount, reason)
-    VALUES (${puuid}, ${amount}, ${reason})
+    VALUES (${userId}, ${amount}, ${reason})
   `;
 }
 
 async function getUserPoints(puuid) {
-  const [row] = await sql`SELECT points, total_earned FROM user_points WHERE user_id = ${puuid}`;
+  const userId = await resolveUserId(puuid);
+  if (!userId) return { points: 0, total_earned: 0 };
+  const [row] = await sql`SELECT points, total_earned FROM user_points WHERE user_id = ${userId}`;
   return row ?? { points: 0, total_earned: 0 };
 }
 
@@ -116,23 +125,20 @@ async function resolveBets(puuid, outcome) {
 
     if (won) {
       const reward = Math.floor(bet.amount * BET_MULTIPLIER);
-      // Prefer awarding to bettor's PUUID (used by the web app point system).
-      // Fall back to bettor_user_id (integer stored as text) if no linked account found.
-      const pointsKey = bet.bettor_puuid || bet.bettor_user_id;
-      if (!bet.bettor_puuid) {
-        console.warn(`[resolveBets] Pas de puuid pour bettor_user_id=${bet.bettor_user_id} — crédit sur user_id directement`);
+      const userId = parseInt(bet.bettor_user_id, 10);
+      if (userId) {
+        await sql`
+          INSERT INTO user_points (user_id, points, total_earned)
+          VALUES (${userId}, ${reward}, ${reward})
+          ON CONFLICT (user_id) DO UPDATE SET
+            points       = user_points.points + ${reward},
+            total_earned = user_points.total_earned + ${reward}
+        `;
+        await sql`
+          INSERT INTO point_transactions (user_id, amount, reason)
+          VALUES (${userId}, ${reward}, 'bet_win')
+        `;
       }
-      await sql`
-        INSERT INTO user_points (user_id, points, total_earned)
-        VALUES (${pointsKey}, ${reward}, ${reward})
-        ON CONFLICT (user_id) DO UPDATE SET
-          points       = user_points.points + ${reward},
-          total_earned = user_points.total_earned + ${reward}
-      `;
-      await sql`
-        INSERT INTO point_transactions (user_id, amount, reason)
-        VALUES (${pointsKey}, ${reward}, 'bet_win')
-      `;
       console.log(`[resolveBets] Pari #${bet.id} GAGNÉ — +${reward} pts crédités sur ${pointsKey}`);
     } else {
       console.log(`[resolveBets] Pari #${bet.id} PERDU — ${bet.amount} pts perdus`);

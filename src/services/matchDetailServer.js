@@ -55,13 +55,38 @@ function send(res, status, body) {
   res.end(json);
 }
 
-function startMatchDetailServer() {
+function startMatchDetailServer(client) {
   if (!RIOT_API_KEY) {
     console.warn("⚠️  RIOT_API_KEY manquante — serveur match-detail non démarré.");
     return;
   }
 
   const server = http.createServer(async (req, res) => {
+    // POST /announce — envoie un message texte à tous les salons configurés
+    if (req.method === "POST" && req.url === "/announce") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", async () => {
+        try {
+          const { message } = JSON.parse(body);
+          if (!message) { send(res, 400, { error: "message requis" }); return; }
+          const { sql } = require("../database");
+          const channels = await sql`SELECT channel_id FROM servers`;
+          let sent = 0;
+          for (const { channel_id } of channels) {
+            try {
+              const ch = await client.channels.fetch(channel_id);
+              if (ch?.isTextBased()) { await ch.send(message); sent++; }
+            } catch { /* salon inaccessible, on continue */ }
+          }
+          send(res, 200, { ok: true, sent });
+        } catch (e) {
+          send(res, 500, { error: e.message });
+        }
+      });
+      return;
+    }
+
     if (req.method !== "GET") { send(res, 405, { error: "Method not allowed" }); return; }
 
     const matchRoute = req.url?.match(/^\/match\/([A-Z0-9]+_\d+)$/);
