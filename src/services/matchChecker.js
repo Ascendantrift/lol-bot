@@ -11,6 +11,7 @@ let _checkRunning = false;
 async function updateLossStats(player, isWin, timeSpentDead = 0) {
   const puuid    = player.puuid;
   const monthStr = new Date().toISOString().slice(0, 7);
+  const serverIds = await listServerIdsForPuuid(puuid);
 
   await sql`UPDATE accounts SET total_time_spent_dead = total_time_spent_dead + ${timeSpentDead} WHERE puuid = ${puuid}`;
 
@@ -22,26 +23,30 @@ async function updateLossStats(player, isWin, timeSpentDead = 0) {
     }
     await sql`UPDATE accounts SET win_streak = win_streak + 1, total_wins = total_wins + 1 WHERE puuid = ${puuid}`;
     await sql`UPDATE accounts SET max_win_streak = GREATEST(max_win_streak, win_streak) WHERE puuid = ${puuid}`;
-    await sql`
-      INSERT INTO monthly_stats (puuid, month, wins, losses, games, total_time_spent_dead)
-      VALUES (${puuid}, ${monthStr}, 1, 0, 1, ${timeSpentDead})
-      ON CONFLICT (puuid, month) DO UPDATE SET
-        wins                  = monthly_stats.wins + 1,
-        games                 = monthly_stats.games + 1,
-        total_time_spent_dead = monthly_stats.total_time_spent_dead + ${timeSpentDead}
-    `;
+    for (const serverId of serverIds) {
+      await sql`
+        INSERT INTO monthly_stats (puuid, month, server_id, wins, losses, games, total_time_spent_dead)
+        VALUES (${puuid}, ${monthStr}, ${serverId}, 1, 0, 1, ${timeSpentDead})
+        ON CONFLICT (puuid, month, server_id) DO UPDATE SET
+          wins                  = monthly_stats.wins + 1,
+          games                 = monthly_stats.games + 1,
+          total_time_spent_dead = monthly_stats.total_time_spent_dead + ${timeSpentDead}
+      `;
+    }
   } else {
     await sql`UPDATE accounts SET win_streak = 0 WHERE puuid = ${puuid}`;
     await sql`UPDATE accounts SET loss_streak = loss_streak + 1, total_losses = total_losses + 1 WHERE puuid = ${puuid}`;
     await sql`UPDATE accounts SET max_loss_streak = GREATEST(max_loss_streak, loss_streak) WHERE puuid = ${puuid}`;
-    await sql`
-      INSERT INTO monthly_stats (puuid, month, wins, losses, games, total_time_spent_dead)
-      VALUES (${puuid}, ${monthStr}, 0, 1, 1, ${timeSpentDead})
-      ON CONFLICT (puuid, month) DO UPDATE SET
-        losses                = monthly_stats.losses + 1,
-        games                 = monthly_stats.games + 1,
-        total_time_spent_dead = monthly_stats.total_time_spent_dead + ${timeSpentDead}
-    `;
+    for (const serverId of serverIds) {
+      await sql`
+        INSERT INTO monthly_stats (puuid, month, server_id, wins, losses, games, total_time_spent_dead)
+        VALUES (${puuid}, ${monthStr}, ${serverId}, 0, 1, 1, ${timeSpentDead})
+        ON CONFLICT (puuid, month, server_id) DO UPDATE SET
+          losses                = monthly_stats.losses + 1,
+          games                 = monthly_stats.games + 1,
+          total_time_spent_dead = monthly_stats.total_time_spent_dead + ${timeSpentDead}
+      `;
+    }
   }
 
   if (player.user_id) {
@@ -66,37 +71,54 @@ function computeNormalizedLp(rankData) {
   return (base + div) * 100 + (rankData.lp ?? 0);
 }
 
+async function listServerIdsForPuuid(puuid) {
+  try {
+    const rows = await sql`
+      SELECT DISTINCT server_id
+      FROM server_members
+      WHERE puuid = ${puuid}
+      ORDER BY server_id ASC
+    `;
+    return rows.map((r) => Number(r.server_id)).filter((n) => Number.isFinite(n));
+  } catch {
+    return [];
+  }
+}
+
 async function insertMatchHistory(matchId, puuid, participant, info, win, badgeKeys, lpNormalized = null) {
   try {
     const playedAt    = new Date(info.gameEndTimestamp).toISOString();
     const badgesJson  = Array.isArray(badgeKeys) && badgeKeys.length > 0 ? JSON.stringify(badgeKeys) : null;
     const teamPos     = typeof participant.teamPosition === "string" && participant.teamPosition ? participant.teamPosition : null;
-    await sql`
-      INSERT INTO match_history (
-        id, puuid, champion_name, kills, deaths, assists,
-        duration_seconds, queue_id, played_at, win, badges_json, time_spent_dead_seconds, team_position, lp_normalized
-      ) VALUES (
-        ${matchId}, ${puuid}, ${participant.championName},
-        ${participant.kills}, ${participant.deaths}, ${participant.assists},
-        ${info.gameDuration}, ${info.queueId}, ${playedAt}, ${win},
-        ${badgesJson},
-        ${typeof participant.totalTimeSpentDead === "number" ? participant.totalTimeSpentDead : 0},
-        ${teamPos}, ${lpNormalized}
-      )
-      ON CONFLICT (id, puuid) DO UPDATE SET
-        champion_name           = EXCLUDED.champion_name,
-        kills                   = EXCLUDED.kills,
-        deaths                  = EXCLUDED.deaths,
-        assists                 = EXCLUDED.assists,
-        duration_seconds        = EXCLUDED.duration_seconds,
-        queue_id                = EXCLUDED.queue_id,
-        played_at               = EXCLUDED.played_at,
-        win                     = EXCLUDED.win,
-        badges_json             = EXCLUDED.badges_json,
-        time_spent_dead_seconds = EXCLUDED.time_spent_dead_seconds,
-        team_position           = EXCLUDED.team_position,
-        lp_normalized           = COALESCE(EXCLUDED.lp_normalized, match_history.lp_normalized)
-    `;
+    const serverIds = await listServerIdsForPuuid(puuid);
+    for (const serverId of serverIds) {
+      await sql`
+        INSERT INTO match_history (
+          id, puuid, server_id, champion_name, kills, deaths, assists,
+          duration_seconds, queue_id, played_at, win, badges_json, time_spent_dead_seconds, team_position, lp_normalized
+        ) VALUES (
+          ${matchId}, ${puuid}, ${serverId}, ${participant.championName},
+          ${participant.kills}, ${participant.deaths}, ${participant.assists},
+          ${info.gameDuration}, ${info.queueId}, ${playedAt}, ${win},
+          ${badgesJson},
+          ${typeof participant.totalTimeSpentDead === "number" ? participant.totalTimeSpentDead : 0},
+          ${teamPos}, ${lpNormalized}
+        )
+        ON CONFLICT (id, puuid, server_id) DO UPDATE SET
+          champion_name           = EXCLUDED.champion_name,
+          kills                   = EXCLUDED.kills,
+          deaths                  = EXCLUDED.deaths,
+          assists                 = EXCLUDED.assists,
+          duration_seconds        = EXCLUDED.duration_seconds,
+          queue_id                = EXCLUDED.queue_id,
+          played_at               = EXCLUDED.played_at,
+          win                     = EXCLUDED.win,
+          badges_json             = EXCLUDED.badges_json,
+          time_spent_dead_seconds = EXCLUDED.time_spent_dead_seconds,
+          team_position           = EXCLUDED.team_position,
+          lp_normalized           = COALESCE(EXCLUDED.lp_normalized, match_history.lp_normalized)
+      `;
+    }
   } catch (e) {
     console.error("match_history:", e.message);
   }

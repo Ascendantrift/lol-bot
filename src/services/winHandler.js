@@ -1,7 +1,7 @@
 const { sql }                                       = require("../database");
 const { evaluateTriggeredWinBadges }                = require("../../badges");
 const { recordNotification }                        = require("./notifications");
-const { resolveDiscordLabel, buildWinEmbed, previewEmbed } = require("./embeds");
+const { resolveDiscordIdentity, buildWinEmbed, previewEmbed } = require("./embeds");
 const { QUEUE_TYPES, fetchPlayerRank }              = require("./riot");
 const { registerBadgeUnlock }                       = require("./badgeService");
 const { awardWin, awardBadge, resolveBets }          = require("./pointsService");
@@ -67,13 +67,13 @@ async function handleWin(client, player, p, info, matchId, previousLossStreak) {
 
     for (const badge of triggered) {
       const unlock = await registerBadgeUnlock(player.puuid, badge);
-      if (unlock.isNew) unlockedBadges.push(badge);
+      if (unlock.isNew) unlockedBadges.push({ ...badge, isFirstOnServer: unlock.isFirstOnServer });
     }
   }
 
   // ── Envoi Discord ─────────────────────────────────────────────────────────────
-  const discordLabel = await resolveDiscordLabel(client, player);
-  const embed = buildWinEmbed({ discordLabel, championName: p.championName, queueName, min, sec, kda, rankData, streak: currentWinStreak, unlockedBadges });
+  const discordIdentity = await resolveDiscordIdentity(client, player);
+  const embed = buildWinEmbed({ player, discordIdentity, championName: p.championName, queueName, min, sec, kda, rankData, streak: currentWinStreak, unlockedBadges });
 
   console.log(`[PREVIEW] ${player.game_name}:\n${previewEmbed(embed)}`);
 

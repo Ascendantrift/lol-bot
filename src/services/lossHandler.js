@@ -1,7 +1,7 @@
 const { sql }                                        = require("../database");
 const { evaluateTriggeredBadges }                    = require("../../badges");
 const { recordNotification }                         = require("./notifications");
-const { resolveDiscordLabel, buildLossEmbed, previewEmbed } = require("./embeds");
+const { resolveDiscordIdentity, buildLossEmbed, previewEmbed } = require("./embeds");
 const { QUEUE_TYPES, fetchPlayerRank }               = require("./riot");
 const { registerBadgeUnlock }                        = require("./badgeService");
 const { awardLoss, awardBadge, resolveBets }         = require("./pointsService");
@@ -61,7 +61,7 @@ async function handleLoss(client, player, p, info, matchId, activeStreak) {
 
     for (const badge of triggered) {
       const unlock = await registerBadgeUnlock(player.puuid, badge);
-      if (unlock.isNew) unlockedBadges.push(badge);
+      if (unlock.isNew) unlockedBadges.push({ ...badge, isFirstOnServer: unlock.isFirstOnServer });
     }
   }
 
@@ -76,8 +76,8 @@ async function handleLoss(client, player, p, info, matchId, activeStreak) {
   }
 
   // ── Envoi Discord ─────────────────────────────────────────────────────────────
-  const discordLabel = await resolveDiscordLabel(client, player);
-  const embed = buildLossEmbed({ discordLabel, championName: p.championName, queueName, min, sec, kda, rankData, streak: activeStreak, unlockedBadges });
+  const discordIdentity = await resolveDiscordIdentity(client, player);
+  const embed = buildLossEmbed({ player, discordIdentity, championName: p.championName, queueName, min, sec, kda, rankData, streak: activeStreak, unlockedBadges });
 
   console.log(`[PREVIEW] ${player.game_name}:\n${previewEmbed(embed)}`);
 
