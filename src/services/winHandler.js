@@ -4,7 +4,7 @@ const { recordNotification }                        = require("./notifications")
 const { resolveDiscordIdentity, buildWinEmbed, previewEmbed } = require("./embeds");
 const { QUEUE_TYPES, fetchPlayerRank }              = require("./riot");
 const { registerBadgeUnlock }                       = require("./badgeService");
-const { awardWin, awardBadge, resolveBets }          = require("./pointsService");
+const { awardWin, awardBadge, resolveBets, buildWinBreakdown } = require("./pointsService");
 
 
 function tierColumnForRankedQueue(queueId) {
@@ -13,10 +13,10 @@ function tierColumnForRankedQueue(queueId) {
   return null;
 }
 
-// Renvoie les channels Discord des serveurs en mode 'positive' ou 'both' pour ce joueur
+// Renvoie les serveurs Discord en mode 'positive' ou 'both' pour ce joueur
 async function getWinSubs(puuid) {
   return sql`
-    SELECT s.channel_id FROM servers s
+    SELECT s.id AS server_id, s.channel_id FROM servers s
     JOIN server_members sm ON sm.server_id = s.id
     WHERE sm.puuid = ${puuid} AND s.mode IN ('positive', 'both')
   `;
@@ -46,28 +46,41 @@ async function handleWin(client, player, p, info, matchId, previousLossStreak) {
 
   // ── Badges ────────────────────────────────────────────────────────────────────
   const subs = await getWinSubs(player.puuid);
-  let unlockedBadges = [];
 
+  // Évaluation des badges une seule fois (clés possédées = toutes parties confondues)
+  let triggered = [];
   if (subs.length > 0) {
     let ownedBadgeKeys = [];
     if (player.user_id) {
       const rows = await sql`SELECT DISTINCT badge_key FROM badges WHERE entity_id IN (SELECT puuid FROM accounts WHERE user_id = ${player.user_id})`;
       ownedBadgeKeys = rows.map((b) => b.badge_key);
     } else {
-      const rows = await sql`SELECT badge_key FROM badges WHERE entity_id = ${player.puuid}`;
+      const rows = await sql`SELECT DISTINCT badge_key FROM badges WHERE entity_id = ${player.puuid}`;
       ownedBadgeKeys = rows.map((b) => b.badge_key);
     }
 
-    let triggered = evaluateTriggeredWinBadges(p, currentWinStreak, info, previousLossStreak, ownedBadgeKeys, oldTierWin, rankData?.tier ?? null);
+    triggered = evaluateTriggeredWinBadges(p, currentWinStreak, info, previousLossStreak, ownedBadgeKeys, oldTierWin, rankData?.tier ?? null);
     if (triggered.length > 0) {
       const updatedKeys = [...ownedBadgeKeys, ...triggered.map((b) => b.key)];
       const secondPass  = evaluateTriggeredWinBadges(p, currentWinStreak, info, previousLossStreak, updatedKeys, oldTierWin, rankData?.tier ?? null);
       secondPass.forEach((b) => { if (!triggered.find((t) => t.key === b.key)) triggered.push(b); });
     }
+  }
 
-    for (const badge of triggered) {
-      const unlock = await registerBadgeUnlock(player.puuid, badge);
-      if (unlock.isNew) unlockedBadges.push({ ...badge, isFirstOnServer: unlock.isFirstOnServer });
+  // Enregistrement des badges par serveur
+  const unlockedBadges = []; // badges nouveaux sur au moins un serveur (pour embed global)
+  const unlockedPerServer = new Map(); // serverId → badge[]
+  for (const badge of triggered) {
+    for (const sub of subs) {
+      const unlock = await registerBadgeUnlock(player.puuid, badge, sub.server_id);
+      if (unlock.isNew) {
+        if (!unlockedBadges.find((b) => b.key === badge.key)) {
+          unlockedBadges.push({ ...badge, isFirstOnServer: unlock.isFirstOnServer });
+        }
+        if (!unlockedPerServer.has(sub.server_id)) unlockedPerServer.set(sub.server_id, []);
+        unlockedPerServer.get(sub.server_id).push(badge);
+        await awardBadge(player.puuid, badge.rank, sub.server_id).catch(() => {});
+      }
     }
   }
 
@@ -85,36 +98,41 @@ async function handleWin(client, player, p, info, matchId, previousLossStreak) {
     }
   }
 
-  // ── Notifications web ─────────────────────────────────────────────────────────
+  // ── Notifications web (une par serveur, avec breakdown des jetons) ─────────────
   const ts = info.gameEndTimestamp || Date.now();
   const baseDetails = { queueLabel: queueName, accountName: player.game_name, champion: p.championName, ...kda, durationSeconds: info.gameDuration, tier: rankData ? `${rankData.tier} ${rankData.rank}` : null, lp: rankData?.lp ?? null };
 
-  await recordNotification({
-    ts, kind: "win", accountPuuid: player.puuid, matchId,
-    message: `🏆 [${queueName}] - ${player.game_name} a gagné avec ${p.championName} (${kda.kills}/${kda.deaths}/${kda.assists}) en ${min}:${sec} min.${rankData ? ` - ${rankData.tier} ${rankData.rank} — ${rankData.lp} LP` : ""}`,
-    details: baseDetails,
-  });
+  for (const sub of subs) {
+    const serverBadges = unlockedPerServer.get(sub.server_id) ?? [];
+    const breakdown = await buildWinBreakdown(player.puuid, currentWinStreak, sub.server_id, serverBadges);
+    const pointsTotal = breakdown.reduce((s, b) => s + b.amount, 0);
 
-  if (currentWinStreak >= 2) {
     await recordNotification({
-      ts, kind: "streak", accountPuuid: player.puuid, matchId,
-      message: `🏆 ${player.game_name} enchaîne ${currentWinStreak} victoires d'affilée.`,
-      details: { ...baseDetails, streakCount: currentWinStreak },
+      ts, kind: "win", accountPuuid: player.puuid, serverId: sub.server_id, matchId,
+      message: `🏆 [${queueName}] - ${player.game_name} a gagné avec ${p.championName} (${kda.kills}/${kda.deaths}/${kda.assists}) en ${min}:${sec} min.${rankData ? ` - ${rankData.tier} ${rankData.rank} — ${rankData.lp} LP` : ""}`,
+      details: { ...baseDetails, pointsBreakdown: breakdown, pointsTotal },
     });
+
+    if (currentWinStreak >= 2) {
+      await recordNotification({
+        ts, kind: "streak", accountPuuid: player.puuid, serverId: sub.server_id, matchId,
+        message: `🏆 ${player.game_name} enchaîne ${currentWinStreak} victoires d'affilée.`,
+        details: { ...baseDetails, streakCount: currentWinStreak },
+      });
+    }
+
+    for (const badge of unlockedBadges) {
+      await recordNotification({
+        ts, kind: "badge", accountPuuid: player.puuid, serverId: sub.server_id, matchId,
+        message: `✨ ${player.game_name} vient de débloquer le badge « ${badge.name} ».`,
+        details: { ...baseDetails, badgeKey: badge.key, badgeName: badge.name, badgeRank: badge.rank, isServerFirst: badge.isFirstOnServer },
+      });
+    }
   }
 
-  for (const badge of unlockedBadges) {
-    await recordNotification({
-      ts, kind: "badge", accountPuuid: player.puuid, matchId,
-      message: `✨ ${player.game_name} vient de débloquer le badge « ${badge.name} ».`,
-      details: { ...baseDetails, badgeKey: badge.key, badgeName: badge.name, badgeRank: badge.rank },
-    });
-  }
-
-  // ── Points & bets ─────────────────────────────────────────────────────────────
-  await awardWin(player.puuid, currentWinStreak).catch(() => {});
-  for (const badge of unlockedBadges) {
-    await awardBadge(player.puuid, badge.rank).catch(() => {});
+  // ── Points & bets (une fois par serveur) ─────────────────────────────────────
+  for (const sub of subs) {
+    await awardWin(player.puuid, currentWinStreak, sub.server_id).catch(() => {});
   }
   await resolveBets(player.puuid, "win").catch((e) => console.error(`[resolveBets] win ${player.game_name}: ${e.message}`));
 
