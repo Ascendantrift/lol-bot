@@ -356,13 +356,13 @@ const WIN_BADGES = [
   {
     key: "CHASSEUR_DE_PRIMES",
     name: "Chasseur de Primes",
-    description: "Tuer un joueur avec une prime d'au moins 800 golds et gagner",
+    description: "Tuer un joueur avec une prime d'au moins 700 golds et gagner",
     rank: "Argent",
     version: 1,
     valence: "positive",
     repeatable: true,
     trigger: ({ participant }) =>
-      (participant.challenges?.bountyGold || 0) >= 800,
+      (participant.challenges?.bountyGold || 0) >= 700,
   },
   {
     key: "KAIZEN",
