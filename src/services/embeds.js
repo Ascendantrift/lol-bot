@@ -8,7 +8,7 @@ async function resolveDiscordIdentity(client, player) {
         (await client.users.fetch(player.discord_id));
       return {
         label: user.globalName || user.username || player.game_name,
-        avatarUrl: user.displayAvatarURL({ extension: "png", size: 64 }),
+        avatarUrl: user.displayAvatarURL({ extension: "png", size: 128 }),
       };
     } catch {
       /* fallback */
