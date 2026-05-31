@@ -61,7 +61,20 @@ function startMatchDetailServer(client) {
     return;
   }
 
+  const { scanIdlePlayers } = require("./liveChecker");
+
   const server = http.createServer(async (req, res) => {
+    // POST /live/scan — détecte les nouvelles parties en cours à la demande
+    if (req.method === "POST" && req.url === "/live/scan") {
+      try {
+        const found = await scanIdlePlayers();
+        send(res, 200, { ok: true, found });
+      } catch (e) {
+        send(res, 500, { error: e.message });
+      }
+      return;
+    }
+
     // POST /announce — envoie un message texte à tous les salons configurés
     if (req.method === "POST" && req.url === "/announce") {
       let body = "";

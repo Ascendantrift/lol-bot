@@ -6,7 +6,7 @@ require("dotenv").config({ path: envPath });
 const { Client, Collection, GatewayIntentBits } = require("discord.js");
 const { sql, ensureReady }       = require("./src/database");
 const { checkMatches }           = require("./src/services/matchChecker");
-const { checkLiveGames }         = require("./src/services/liveChecker");
+const { maintainActiveGames }    = require("./src/services/liveChecker");
 const { announceMonthlyStats }   = require("./src/services/cron");
 const { startMatchDetailServer } = require("./src/services/matchDetailServer");
 const { setupWallListener }      = require("./src/services/wallListener");
@@ -49,8 +49,8 @@ client.once("clientReady", async () => {
 
   setInterval(() => checkMatches(client), 60_000);
 
-  checkLiveGames().catch((e) => console.error("live tick:", e?.message || e));
-  setInterval(() => checkLiveGames().catch((e) => console.error("live tick:", e?.message || e)), 60_000);
+  maintainActiveGames().catch((e) => console.error("live tick:", e?.message || e));
+  setInterval(() => maintainActiveGames().catch((e) => console.error("live tick:", e?.message || e)), 30_000);
 
   setInterval(async () => {
     const now = new Date();

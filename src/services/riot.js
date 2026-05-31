@@ -130,6 +130,33 @@ async function getActiveGameByPuuid(puuid, retries = 2) {
   }
 }
 
+/**
+ * Vérifie si un joueur est en partie avec distinction 404 / erreur.
+ * @returns {{ game: object|null, ended: boolean }}
+ *   ended=true  → 404 confirmé, la partie est terminée
+ *   ended=false → erreur réseau/API, on ne sait pas
+ */
+async function checkActiveGame(puuid, retries = 2) {
+  const axiosConfig = { headers: { "X-Riot-Token": RIOT_API_KEY } };
+  const url = `https://euw1.api.riotgames.com/lol/spectator/v5/active-games/by-summoner/${puuid}`;
+  try {
+    const res = await axios.get(url, axiosConfig);
+    return { game: res.data, ended: false };
+  } catch (e) {
+    if (e.response?.status === 429 && retries > 0) {
+      const retryAfter = parseInt(e.response.headers?.["retry-after"] ?? "5", 10);
+      const wait = (Number.isFinite(retryAfter) ? retryAfter : 5) * 1000;
+      await new Promise((r) => setTimeout(r, wait));
+      return checkActiveGame(puuid, retries - 1);
+    }
+    if (e.response?.status === 404) {
+      return { game: null, ended: true };
+    }
+    console.error(`⚠️ Spectator API (${puuid}) : ${e.message}`);
+    return { game: null, ended: false };
+  }
+}
+
 async function getChampionName(championId) {
   if (!championsCache) {
     try {
@@ -156,6 +183,7 @@ module.exports = {
   fetchBestRankForLive,
   getChampionName,
   getActiveGameByPuuid,
+  checkActiveGame,
   getDdragonVersion,
   championSquareImgUrl,
 };

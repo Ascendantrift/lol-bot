@@ -1,8 +1,8 @@
 const { sql } = require("../database");
-const { getActiveGameByPuuid, getChampionName, fetchBestRankForLive } = require("./riot");
+const { getActiveGameByPuuid, checkActiveGame, getChampionName, fetchBestRankForLive } = require("./riot");
 
-const LIVE_TTL_MS = 5 * 60 * 1000;
-const SPECTATOR_MIN_INTERVAL_MS = 60 * 1000;
+const LIVE_TTL_MS = 3 * 60 * 1000;        // 3 min de sécurité si l'API plante en continu
+const SPECTATOR_MIN_INTERVAL_MS = 60 * 1000; // garde pour rétrocompat éventuelle
 
 const lastCheckByPuuid = new Map();
 
@@ -56,7 +56,6 @@ async function upsertParticipants(game, serverPuuids) {
   const id = String(game.gameId);
   const participants = (game.participants || []).filter(Boolean);
 
-  // Fetch ranks in parallel for all participants (only useful on first insert — skipped after)
   const tierByPuuid = new Map();
   await Promise.all(
     participants.map(async (p) => {
@@ -113,38 +112,99 @@ async function pruneStaleGames(observedAtMs) {
   await sql`DELETE FROM live_games WHERE observed_at_ms < ${cutoff}`;
 }
 
-async function checkLiveGames() {
+/**
+ * Vérifie les joueurs PAS encore en partie et détecte de nouvelles parties.
+ * Appelé à la demande (ouverture de page / bouton Actualiser).
+ */
+async function scanIdlePlayers() {
   const accounts = await sql`SELECT puuid FROM accounts`;
-  if (accounts.length === 0) return;
+  if (accounts.length === 0) return 0;
+
+  // Puuids déjà dans une partie en cours
+  const activeRows = await sql`
+    SELECT DISTINCT p.puuid FROM live_participants p
+    JOIN live_games g ON g.id = p.game_id
+  `;
+  const activePuuids = new Set(activeRows.map((r) => r.puuid));
+
+  const idlePlayers = accounts.filter((a) => !activePuuids.has(a.puuid));
+  if (idlePlayers.length === 0) return 0;
 
   const serverPuuids = new Set(accounts.map((a) => a.puuid));
-  const now = Date.now();
   const coveredPuuids = new Set();
+  const now = Date.now();
+  let found = 0;
 
-  for (const acc of accounts) {
+  for (const acc of idlePlayers) {
     if (coveredPuuids.has(acc.puuid)) continue;
-    const last = lastCheckByPuuid.get(acc.puuid) || 0;
-    if (now - last < SPECTATOR_MIN_INTERVAL_MS) continue;
-    lastCheckByPuuid.set(acc.puuid, now);
 
     const game = await getActiveGameByPuuid(acc.puuid);
-    if (!game) continue;
+    if (!game) {
+      await new Promise((r) => setTimeout(r, 200));
+      continue;
+    }
 
     try {
       await upsertLiveGame(game, now);
       await upsertParticipants(game, serverPuuids);
+      found++;
     } catch (e) {
-      console.error(`live_games upsert (${acc.puuid}): ${e.message}`);
+      console.error(`[scanIdlePlayers] upsert (${acc.puuid}): ${e.message}`);
     }
 
     for (const p of game.participants || []) {
       if (serverPuuids.has(p.puuid)) coveredPuuids.add(p.puuid);
     }
 
-    await new Promise((r) => setTimeout(r, 600));
+    await new Promise((r) => setTimeout(r, 400));
+  }
+
+  return found;
+}
+
+/**
+ * Vérifie uniquement les joueurs DÉJÀ en partie.
+ * Supprime immédiatement une partie quand l'API Spectator répond 404.
+ * Tourne en boucle toutes les 30 s.
+ */
+async function maintainActiveGames() {
+  const activeRows = await sql`
+    SELECT DISTINCT p.puuid, p.game_id
+    FROM live_participants p
+    JOIN live_games g ON g.id = p.game_id
+    WHERE p.is_server = true
+  `;
+
+  if (activeRows.length === 0) {
+    // Nettoyage de sécurité pour les parties orphelines éventuelles
+    await pruneStaleGames(Date.now());
+    return;
+  }
+
+  const serverPuuids = new Set((await sql`SELECT puuid FROM accounts`).map((a) => a.puuid));
+  const checkedGameIds = new Set();
+  const now = Date.now();
+
+  for (const { puuid, game_id } of activeRows) {
+    if (checkedGameIds.has(game_id)) continue;
+
+    const { game, ended } = await checkActiveGame(puuid);
+
+    if (game) {
+      await upsertLiveGame(game, now);
+    } else if (ended) {
+      // 404 confirmé → la partie est réellement terminée
+      await sql`DELETE FROM live_participants WHERE game_id = ${game_id}`;
+      await sql`DELETE FROM live_games WHERE id = ${game_id}`;
+      console.log(`[live] Partie ${game_id} terminée — supprimée.`);
+    }
+    // erreur réseau/API → on ne touche pas, le TTL de 3 min sert de filet
+
+    checkedGameIds.add(game_id);
+    await new Promise((r) => setTimeout(r, 400));
   }
 
   await pruneStaleGames(now);
 }
 
-module.exports = { checkLiveGames, LIVE_TTL_MS };
+module.exports = { scanIdlePlayers, maintainActiveGames, LIVE_TTL_MS };
