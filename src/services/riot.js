@@ -57,6 +57,13 @@ async function fetchPlayerRank(puuid, queueId) {
  * @param {string} puuid
  * @returns {Promise<string|null>}
  */
+function formatRankEntry(entry) {
+  if (!entry) return null;
+  const apex = ["MASTER", "GRANDMASTER", "CHALLENGER"].includes(entry.tier?.toUpperCase());
+  if (apex) return `${entry.tier} ${entry.leaguePoints ?? 0}`;
+  return entry.rank ? `${entry.tier} ${entry.rank}` : entry.tier;
+}
+
 async function fetchBestRankForLive(puuid) {
   try {
     const { data } = await axios.get(
@@ -65,9 +72,23 @@ async function fetchBestRankForLive(puuid) {
     );
     const solo = data.find((e) => e.queueType === "RANKED_SOLO_5x5");
     const flex = data.find((e) => e.queueType === "RANKED_FLEX_SR");
-    const entry = solo ?? flex ?? null;
-    if (!entry) return null;
-    return entry.rank ? `${entry.tier} ${entry.rank}` : entry.tier;
+    return formatRankEntry(solo ?? flex ?? null);
+  } catch {
+    return null;
+  }
+}
+
+async function fetchRankForQueue(puuid, queueId) {
+  try {
+    const { data } = await axios.get(
+      `https://euw1.api.riotgames.com/lol/league/v4/entries/by-puuid/${puuid}`,
+      { headers: { "X-Riot-Token": RIOT_API_KEY } },
+    );
+    const solo = data.find((e) => e.queueType === "RANKED_SOLO_5x5");
+    const flex = data.find((e) => e.queueType === "RANKED_FLEX_SR");
+    if (queueId === 420) return formatRankEntry(solo ?? flex ?? null);
+    if (queueId === 440) return formatRankEntry(flex ?? solo ?? null);
+    return formatRankEntry(solo ?? flex ?? null);
   } catch {
     return null;
   }
@@ -184,6 +205,7 @@ module.exports = {
   getChampionName,
   getActiveGameByPuuid,
   checkActiveGame,
+  fetchRankForQueue,
   getDdragonVersion,
   championSquareImgUrl,
 };

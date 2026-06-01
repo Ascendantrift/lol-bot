@@ -62,8 +62,29 @@ function startMatchDetailServer(client) {
   }
 
   const { scanIdlePlayers } = require("./liveChecker");
+  const { fetchRankForQueue } = require("./riot");
 
   const server = http.createServer(async (req, res) => {
+    // POST /ranks — retourne le rang actuel pour une liste de puuids
+    if (req.method === "POST" && req.url === "/ranks") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", async () => {
+        try {
+          const { entries } = JSON.parse(body);
+          if (!Array.isArray(entries)) { send(res, 400, { error: "entries[] requis" }); return; }
+          const results = {};
+          await Promise.all(entries.map(async ({ puuid, queueId }) => {
+            results[puuid] = await fetchRankForQueue(puuid, queueId ?? 0).catch(() => null);
+          }));
+          send(res, 200, results);
+        } catch (e) {
+          send(res, 500, { error: e.message });
+        }
+      });
+      return;
+    }
+
     // POST /live/scan — détecte les nouvelles parties en cours à la demande
     if (req.method === "POST" && req.url === "/live/scan") {
       try {

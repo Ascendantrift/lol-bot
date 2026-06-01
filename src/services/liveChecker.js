@@ -1,5 +1,5 @@
 const { sql } = require("../database");
-const { getActiveGameByPuuid, checkActiveGame, getChampionName, fetchBestRankForLive } = require("./riot");
+const { getActiveGameByPuuid, checkActiveGame, getChampionName } = require("./riot");
 
 const LIVE_TTL_MS = 3 * 60 * 1000;        // 3 min de sécurité si l'API plante en continu
 const SPECTATOR_MIN_INTERVAL_MS = 60 * 1000; // garde pour rétrocompat éventuelle
@@ -56,15 +56,6 @@ async function upsertParticipants(game, serverPuuids) {
   const id = String(game.gameId);
   const participants = (game.participants || []).filter(Boolean);
 
-  const tierByPuuid = new Map();
-  await Promise.all(
-    participants.map(async (p) => {
-      const puuid = p.puuid || `streamer_${id}_${p.teamId ?? 0}_${p.championId ?? 0}`;
-      const tier = await fetchBestRankForLive(puuid).catch(() => null);
-      if (tier) tierByPuuid.set(puuid, tier);
-    }),
-  );
-
   for (const p of participants) {
     const puuid = p.puuid || `streamer_${id}_${p.teamId ?? 0}_${p.championId ?? 0}`;
     const championName = p.championId ? await getChampionName(p.championId) : null;
@@ -73,7 +64,7 @@ async function upsertParticipants(game, serverPuuids) {
       (p.riotId && String(p.riotId).trim()) ||
       "";
     const snap = extractLiveSnapshot(p);
-    const tier = tierByPuuid.get(puuid) ?? null;
+    const tier = null;
 
     await sql`
       INSERT INTO live_participants (
