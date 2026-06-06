@@ -52,6 +52,19 @@ async function fetchPlayerRank(puuid, queueId) {
   }
 }
 
+// Reconstruit un rankData {tier, rank, lp} à partir des colonnes déjà stockées
+// (last_tier_solo/lp_solo ou last_tier_flex/lp_flex). Sert de fallback quand
+// l'appel live à fetchPlayerRank échoue (403, réseau) sur une file classée.
+function rankFromStored(player, queueId) {
+  if (queueId !== 420 && queueId !== 440) return null;
+  const tierCol = queueId === 420 ? "last_tier_solo" : "last_tier_flex";
+  const lpCol   = queueId === 420 ? "lp_solo" : "lp_flex";
+  const stored  = player?.[tierCol];
+  if (!stored) return null;
+  const [tier, rank = ""] = String(stored).split(" "); // "GOLD II" → tier+rank, "MASTER" → tier seul
+  return { tier, rank, lp: player[lpCol] ?? null };
+}
+
 /**
  * Retourne "GOLD IV" (solo > flex) pour l'affichage live. Un seul appel API.
  * @param {string} puuid
@@ -201,6 +214,7 @@ module.exports = {
   RIOT_API_KEY,
   QUEUE_TYPES,
   fetchPlayerRank,
+  rankFromStored,
   fetchBestRankForLive,
   getChampionName,
   getActiveGameByPuuid,

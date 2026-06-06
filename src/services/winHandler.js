@@ -2,7 +2,7 @@ const { sql }                                       = require("../database");
 const { evaluateTriggeredWinBadges }                = require("../../badges");
 const { recordNotification }                        = require("./notifications");
 const { resolveDiscordIdentity, buildWinEmbed, previewEmbed } = require("./embeds");
-const { QUEUE_TYPES, fetchPlayerRank }              = require("./riot");
+const { QUEUE_TYPES, fetchPlayerRank, rankFromStored } = require("./riot");
 const { registerBadgeUnlock }                       = require("./badgeService");
 const { awardWin, awardBadge, resolveBets, buildWinBreakdown } = require("./pointsService");
 
@@ -40,6 +40,10 @@ async function handleWin(client, player, p, info, matchId, previousLossStreak) {
     await sql`UPDATE accounts SET ${sql(winTierCol)} = ${tierFull}, ${sql(wCol)} = ${rankData.wins ?? 0}, ${sql(lCol)} = ${rankData.losses ?? 0}, ${sql(lpCol)} = ${rankData.lp ?? 0} WHERE puuid = ${player.puuid}`;
     player[winTierCol] = tierFull;
   }
+
+  // Pour l'affichage (embed + notifs) : si l'appel live a échoué, on retombe
+  // sur le rang déjà stocké au lieu d'afficher "Non classé".
+  const rankDisplay = rankData || rankFromStored(player, info.queueId);
 
   const [winStreakRow] = await sql`SELECT win_streak FROM accounts WHERE puuid = ${player.puuid}`;
   const currentWinStreak = winStreakRow?.win_streak || 0;
@@ -86,7 +90,7 @@ async function handleWin(client, player, p, info, matchId, previousLossStreak) {
 
   // ── Envoi Discord ─────────────────────────────────────────────────────────────
   const discordIdentity = await resolveDiscordIdentity(client, player);
-  const embed = buildWinEmbed({ player, discordIdentity, championName: p.championName, queueName, min, sec, kda, rankData, streak: currentWinStreak, unlockedBadges });
+  const embed = buildWinEmbed({ player, discordIdentity, championName: p.championName, queueName, min, sec, kda, rankData: rankDisplay, streak: currentWinStreak, unlockedBadges });
 
   console.log(`[PREVIEW] ${player.game_name}:\n${previewEmbed(embed)}`);
 
@@ -100,7 +104,7 @@ async function handleWin(client, player, p, info, matchId, previousLossStreak) {
 
   // ── Notifications web (une par serveur, avec breakdown des jetons) ─────────────
   const ts = info.gameEndTimestamp || Date.now();
-  const baseDetails = { queueLabel: queueName, accountName: player.game_name, champion: p.championName, ...kda, durationSeconds: info.gameDuration, tier: rankData ? `${rankData.tier} ${rankData.rank}` : null, lp: rankData?.lp ?? null };
+  const baseDetails = { queueLabel: queueName, accountName: player.game_name, champion: p.championName, ...kda, durationSeconds: info.gameDuration, tier: rankDisplay ? [rankDisplay.tier, rankDisplay.rank].filter(Boolean).join(" ") : null, lp: rankDisplay?.lp ?? null };
 
   for (const sub of subs) {
     const serverBadges = unlockedPerServer.get(sub.server_id) ?? [];
@@ -109,7 +113,7 @@ async function handleWin(client, player, p, info, matchId, previousLossStreak) {
 
     await recordNotification({
       ts, kind: "win", accountPuuid: player.puuid, serverId: sub.server_id, matchId,
-      message: `🏆 [${queueName}] - ${player.game_name} a gagné avec ${p.championName} (${kda.kills}/${kda.deaths}/${kda.assists}) en ${min}:${sec} min.${rankData ? ` - ${rankData.tier} ${rankData.rank} — ${rankData.lp} LP` : ""}`,
+      message: `🏆 [${queueName}] - ${player.game_name} a gagné avec ${p.championName} (${kda.kills}/${kda.deaths}/${kda.assists}) en ${min}:${sec} min.${rankDisplay ? ` - ${[rankDisplay.tier, rankDisplay.rank].filter(Boolean).join(" ")}${rankDisplay.lp != null ? ` — ${rankDisplay.lp} LP` : ""}` : ""}`,
       details: { ...baseDetails, pointsBreakdown: breakdown, pointsTotal },
     });
 

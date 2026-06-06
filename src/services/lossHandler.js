@@ -2,7 +2,7 @@ const { sql }                                        = require("../database");
 const { evaluateTriggeredBadges }                    = require("../../badges");
 const { recordNotification }                         = require("./notifications");
 const { resolveDiscordIdentity, buildLossEmbed, previewEmbed } = require("./embeds");
-const { QUEUE_TYPES, fetchPlayerRank }               = require("./riot");
+const { QUEUE_TYPES, fetchPlayerRank, rankFromStored } = require("./riot");
 const { registerBadgeUnlock }                        = require("./badgeService");
 const { awardLoss, awardBadge, resolveBets, buildLossBreakdown } = require("./pointsService");
 
@@ -88,9 +88,13 @@ async function handleLoss(client, player, p, info, matchId, activeStreak) {
     player[tierCol] = tierFull;
   }
 
+  // Pour l'affichage (embed + notifs) : si l'appel live a échoué, on retombe
+  // sur le rang déjà stocké au lieu d'afficher "Non classé".
+  const rankDisplay = rankData || rankFromStored(player, info.queueId);
+
   // ── Envoi Discord ─────────────────────────────────────────────────────────────
   const discordIdentity = await resolveDiscordIdentity(client, player);
-  const embed = buildLossEmbed({ player, discordIdentity, championName: p.championName, queueName, min, sec, kda, rankData, streak: activeStreak, unlockedBadges });
+  const embed = buildLossEmbed({ player, discordIdentity, championName: p.championName, queueName, min, sec, kda, rankData: rankDisplay, streak: activeStreak, unlockedBadges });
 
   console.log(`[PREVIEW] ${player.game_name}:\n${previewEmbed(embed)}`);
 
@@ -104,7 +108,7 @@ async function handleLoss(client, player, p, info, matchId, activeStreak) {
 
   // ── Notifications web (une par serveur, avec breakdown des jetons) ─────────────
   const ts = info.gameEndTimestamp || Date.now();
-  const baseDetails = { queueLabel: queueName, accountName: player.game_name, champion: p.championName, ...kda, durationSeconds: info.gameDuration, tier: rankData ? `${rankData.tier} ${rankData.rank}` : null, lp: rankData?.lp ?? null };
+  const baseDetails = { queueLabel: queueName, accountName: player.game_name, champion: p.championName, ...kda, durationSeconds: info.gameDuration, tier: rankDisplay ? [rankDisplay.tier, rankDisplay.rank].filter(Boolean).join(" ") : null, lp: rankDisplay?.lp ?? null };
 
   for (const sub of subs) {
     const serverBadges = unlockedPerServer.get(sub.server_id) ?? [];
@@ -113,7 +117,7 @@ async function handleLoss(client, player, p, info, matchId, activeStreak) {
 
     await recordNotification({
       ts, kind: "loss", accountPuuid: player.puuid, serverId: sub.server_id, matchId,
-      message: `🚨 [${queueName}] - ${player.game_name} a perdu avec ${p.championName} (${kda.kills}/${kda.deaths}/${kda.assists}) en ${min}:${sec} min.${rankData ? ` - ${rankData.tier} ${rankData.rank} — ${rankData.lp} LP` : ""}`,
+      message: `🚨 [${queueName}] - ${player.game_name} a perdu avec ${p.championName} (${kda.kills}/${kda.deaths}/${kda.assists}) en ${min}:${sec} min.${rankDisplay ? ` - ${[rankDisplay.tier, rankDisplay.rank].filter(Boolean).join(" ")}${rankDisplay.lp != null ? ` — ${rankDisplay.lp} LP` : ""}` : ""}`,
       details: { ...baseDetails, pointsBreakdown: breakdown, pointsTotal },
     });
 

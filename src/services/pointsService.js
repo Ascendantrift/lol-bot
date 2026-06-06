@@ -6,6 +6,13 @@ const BET_MULTIPLIER = 1.8;
 const POINTS = {
   // Participation à une partie (win ou loss)
   game_played: 100,
+  // Bonus win/loss selon le mode du serveur (en plus des 100 de base)
+  win_positive:  30,  // mode victoire → gros bonus sur les wins
+  win_both:      20,  // mode équilibré
+  win_negative:  10,  // mode défaite → petit gain sur les wins
+  loss_negative: 30,  // mode défaite → gros bonus sur les losses
+  loss_both:     20,  // mode équilibré
+  loss_positive: 10,  // mode victoire → petit gain sur les losses
   // Badges
   badge_bronze: 25,
   badge_silver: 50,

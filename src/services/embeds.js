@@ -45,6 +45,13 @@ function championThumbnail(championName) {
   return `https://cdn.communitydragon.org/latest/champion/${championName}/square`;
 }
 
+// "GOLD II — 50 LP", "MASTER — 320 LP", ou "Non classé" si pas de données.
+function formatRankLine(rankData) {
+  if (!rankData) return "Non classé";
+  const tier = [rankData.tier, rankData.rank].filter(Boolean).join(" ");
+  return rankData.lp != null ? `${tier} — ${rankData.lp} LP` : tier;
+}
+
 function buildBadgesText(unlockedBadges) {
   const lines = [];
 
@@ -106,7 +113,7 @@ function buildLossEmbed({
     min,
     sec,
   });
-  const rankLine   = rankData ? `${rankData.tier} ${rankData.rank} — ${rankData.lp} LP` : "Non classé";
+  const rankLine   = formatRankLine(rankData);
   const streakLine = streak >= 2 ? `${streak}❄️` : "";
 
   return {
@@ -140,7 +147,7 @@ function buildWinEmbed({
     min,
     sec,
   });
-  const rankLine   = rankData ? `${rankData.tier} ${rankData.rank} — ${rankData.lp} LP` : "Non classé";
+  const rankLine   = formatRankLine(rankData);
   const streakLine = streak >= 2 ? `${streak}🔥` : "";
 
   return {
