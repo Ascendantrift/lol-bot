@@ -4,7 +4,7 @@ const { recordNotification }                         = require("./notifications"
 const { resolveDiscordIdentity, buildLossEmbed, previewEmbed } = require("./embeds");
 const { QUEUE_TYPES, fetchPlayerRank, rankFromStored } = require("./riot");
 const { registerBadgeUnlock }                        = require("./badgeService");
-const { awardLoss, awardBadge, resolveBets, buildLossBreakdown } = require("./pointsService");
+const { awardLoss, awardBadge, resolveBets } = require("./pointsService");
 
 
 function tierColumnForRankedQueue(queueId) {
@@ -72,8 +72,11 @@ async function handleLoss(client, player, p, info, matchId, activeStreak) {
           unlockedBadges.push({ ...badge, isFirstOnServer: unlock.isFirstOnServer });
         }
         if (!unlockedPerServer.has(sub.server_id)) unlockedPerServer.set(sub.server_id, []);
-        unlockedPerServer.get(sub.server_id).push(badge);
-        await awardBadge(player.puuid, badge.rank, sub.server_id).catch(() => {});
+        // Crédite les points du badge ; on ne le mémorise pour la notif QUE s'il est crédité.
+        const credited = await awardBadge(player.puuid, badge.rank, sub.server_id, matchId);
+        if (credited != null) {
+          unlockedPerServer.get(sub.server_id).push({ badge, amount: credited });
+        }
       }
     }
   }
@@ -111,8 +114,13 @@ async function handleLoss(client, player, p, info, matchId, activeStreak) {
   const baseDetails = { queueLabel: queueName, accountName: player.game_name, champion: p.championName, ...kda, durationSeconds: info.gameDuration, tier: rankDisplay ? [rankDisplay.tier, rankDisplay.rank].filter(Boolean).join(" ") : null, lp: rankDisplay?.lp ?? null };
 
   for (const sub of subs) {
+    // Crédite les points de la partie AVANT d'enregistrer la notif, puis construit la
+    // notif à partir du détail RÉELLEMENT crédité (awardLoss ne renvoie que ce qui a été
+    // écrit en DB). Les badges ont déjà été crédités plus haut (montants mémorisés).
+    const gameBreakdown = await awardLoss(player.puuid, sub.server_id, matchId);
     const serverBadges = unlockedPerServer.get(sub.server_id) ?? [];
-    const breakdown = await buildLossBreakdown(player.puuid, sub.server_id, serverBadges);
+    const badgeBreakdown = serverBadges.map(({ badge, amount }) => ({ label: `${badge.name} (${badge.rank})`, amount }));
+    const breakdown = [...gameBreakdown, ...badgeBreakdown];
     const pointsTotal = breakdown.reduce((s, b) => s + b.amount, 0);
 
     await recordNotification({
@@ -138,10 +146,7 @@ async function handleLoss(client, player, p, info, matchId, activeStreak) {
     }
   }
 
-  // ── Points & bets (une fois par serveur) ─────────────────────────────────────
-  for (const sub of subs) {
-    await awardLoss(player.puuid, sub.server_id).catch(() => {});
-  }
+  // ── Bets (les points de partie ont déjà été crédités dans la boucle notif) ────
   await resolveBets(player.puuid, "loss").catch((e) => console.error(`[resolveBets] loss ${player.game_name}: ${e.message}`));
 
   const lpNormalized = (() => {

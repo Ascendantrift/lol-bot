@@ -1,5 +1,4 @@
 const { sql } = require("../database");
-const { getInsultResponse } = require("./insultResponder");
 
 const WALL_INSULTS = [
   "connard", "conard", "konard", "connart", "connar", "connare",
@@ -93,13 +92,8 @@ function setupWallListener(client) {
     } catch (e) {
       console.error("wall_messages insert:", e.message);
     }
-
-    try {
-      const reply = await getInsultResponse(message.author.id, message.guildId);
-      await message.reply(reply);
-    } catch (e) {
-      console.error("insult reply:", e.message);
-    }
+    // Le bot ne répond plus aux insultes (clapback supprimé) — on archive seulement
+    // le message au mur. La détection sert uniquement à alimenter le mur du site.
   });
 }
 

@@ -103,11 +103,44 @@ async function pruneStaleGames(observedAtMs) {
   await sql`DELETE FROM live_games WHERE observed_at_ms < ${cutoff}`;
 }
 
+// Cache + verrou pour scanIdlePlayers.
+// Un scan = 1 appel Spectator par compte idle (≈ tous les comptes suivis), ce qui
+// pèse lourd face à la limite Riot de 100 req / 2 min. La page live est ouverte par
+// plusieurs visiteurs et poll en boucle → sans garde-fou on déclenche un scan complet
+// par requête. Ces deux protections plafonnent le coût côté serveur, quel que soit le
+// nombre de clients :
+//   - verrou : un seul scan à la fois, les appels concurrents partagent le résultat
+//   - cache  : pas de nouveau scan si le précédent a fini il y a moins de SCAN_CACHE_MS
+const SCAN_CACHE_MS = Number(process.env.LIVE_SCAN_CACHE_MS) || 30 * 1000;
+let _scanInFlight = null;
+let _lastScanAt = 0;
+let _lastScanFound = 0;
+
 /**
  * Vérifie les joueurs PAS encore en partie et détecte de nouvelles parties.
- * Appelé à la demande (ouverture de page / bouton Actualiser).
+ * Appelé à la demande (ouverture de page / bouton Actualiser / poll).
+ * Dédoublonne les appels concurrents et applique un cache court (SCAN_CACHE_MS).
  */
 async function scanIdlePlayers() {
+  // Cache : un scan récent suffit, on renvoie son résultat sans retaper Riot.
+  if (Date.now() - _lastScanAt < SCAN_CACHE_MS) return _lastScanFound;
+  // Verrou : si un scan tourne déjà, on attend le même au lieu d'en lancer un autre.
+  if (_scanInFlight) return _scanInFlight;
+
+  _scanInFlight = (async () => {
+    try {
+      const found = await _doScanIdlePlayers();
+      _lastScanFound = found;
+      return found;
+    } finally {
+      _lastScanAt = Date.now();
+      _scanInFlight = null;
+    }
+  })();
+  return _scanInFlight;
+}
+
+async function _doScanIdlePlayers() {
   const accounts = await sql`SELECT puuid FROM accounts`;
   if (accounts.length === 0) return 0;
 

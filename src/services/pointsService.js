@@ -3,16 +3,11 @@ const { recordNotification } = require("./notifications");
 
 const BET_MULTIPLIER = 1.8;
 
+// Points fixes par partie terminée (victoire OU défaite). Plus aucun bonus selon le
+// mode du serveur — le mode ne sert qu'à décider quels matchs un serveur suit/affiche.
+const FLAT_GAME_POINTS = 120;
+
 const POINTS = {
-  // Participation à une partie (win ou loss)
-  game_played: 100,
-  // Bonus win/loss selon le mode du serveur (en plus des 100 de base)
-  win_positive:  30,  // mode victoire → gros bonus sur les wins
-  win_both:      20,  // mode équilibré
-  win_negative:  10,  // mode défaite → petit gain sur les wins
-  loss_negative: 30,  // mode défaite → gros bonus sur les losses
-  loss_both:     20,  // mode équilibré
-  loss_positive: 10,  // mode victoire → petit gain sur les losses
   // Badges
   badge_bronze: 25,
   badge_silver: 50,
@@ -24,13 +19,33 @@ const POINTS = {
   streak_10: 1000,
 };
 
+function badgeAmount(badgeRank) {
+  const rank = (badgeRank || "").toLowerCase();
+  if (rank === "secret") return POINTS.badge_secret;
+  if (rank === "or" || rank === "gold") return POINTS.badge_gold;
+  if (rank === "argent" || rank === "silver") return POINTS.badge_silver;
+  return POINTS.badge_bronze;
+}
+
+// Crédite `amount` et, si l'écriture réussit, pousse la ligne dans `breakdown`.
+// En cas d'échec DB on LOG (au lieu d'avaler en silence) et on N'AJOUTE PAS la ligne :
+// ainsi le breakdown renvoyé reflète exactement ce qui a été réellement crédité.
+async function creditOrSkip(puuid, amount, reason, serverId, label, breakdown, matchId = null) {
+  try {
+    await addPoints(puuid, amount, reason, serverId, matchId);
+    breakdown.push({ label, amount });
+  } catch (e) {
+    console.error(`[points] échec crédit ${reason} +${amount} (srv ${serverId}, ${puuid}): ${e.message}`);
+  }
+}
+
 async function resolveUserId(puuid) {
   const [row] =
     await sql`SELECT user_id FROM accounts WHERE puuid = ${puuid} AND user_id IS NOT NULL LIMIT 1`;
   return row?.user_id ?? null;
 }
 
-async function addPoints(puuid, amount, reason, serverId) {
+async function addPoints(puuid, amount, reason, serverId, matchId = null) {
   const userId = await resolveUserId(puuid);
   if (!userId) return;
   await sql`
@@ -41,8 +56,8 @@ async function addPoints(puuid, amount, reason, serverId) {
       total_earned = user_points.total_earned + ${Math.max(0, amount)}
   `;
   await sql`
-    INSERT INTO point_transactions (user_id, server_id, amount, reason)
-    VALUES (${userId}, ${serverId}, ${amount}, ${reason})
+    INSERT INTO point_transactions (user_id, server_id, amount, reason, match_id)
+    VALUES (${userId}, ${serverId}, ${amount}, ${reason}, ${matchId})
   `;
 }
 
@@ -54,133 +69,67 @@ async function getUserPoints(puuid, serverId) {
   return row ?? { points: 0, total_earned: 0 };
 }
 
-async function getServerMode(puuid, serverId) {
+// Vrai si ce match a déjà donné lieu à un crédit de partie (win/loss) pour ce
+// joueur sur ce serveur → garde-fou anti double-crédit en cas de retraitement.
+async function gameAlreadyCredited(userId, serverId, matchId) {
+  if (!matchId || !userId) return false;
   const [row] = await sql`
-    SELECT s.mode FROM servers s
-    JOIN server_members sm ON sm.server_id = s.id
-    WHERE sm.puuid = ${puuid} AND s.id = ${serverId}
+    SELECT 1 FROM point_transactions
+    WHERE user_id = ${userId} AND server_id = ${serverId}
+      AND match_id = ${matchId} AND reason IN ('win', 'loss')
+    LIMIT 1
   `;
-  return row?.mode ?? "both";
+  return !!row;
 }
 
-async function awardWin(puuid, winStreak, serverId) {
-  await addPoints(puuid, POINTS.game_played, "game_played", serverId);
-  const mode = await getServerMode(puuid, serverId);
-  const pts =
-    mode === "positive"
-      ? POINTS.win_positive
-      : mode === "negative"
-        ? POINTS.win_negative
-        : POINTS.win_both;
-  await addPoints(puuid, pts, "win", serverId);
-  if (winStreak >= 10)
-    await addPoints(puuid, POINTS.streak_10, "streak", serverId);
-  else if (winStreak >= 5)
-    await addPoints(puuid, POINTS.streak_5, "streak", serverId);
-  else if (winStreak >= 3)
-    await addPoints(puuid, POINTS.streak_3, "streak", serverId);
-}
+// Crédite une victoire (120 fixes + éventuelle série) et RENVOIE le détail
+// réellement écrit en DB. Le breakdown sert tel quel à la notif → ce qui est affiché
+// = ce qui est gagné. Une ligne qui échoue à s'écrire n'apparaît pas dans le retour.
+async function awardWin(puuid, winStreak, serverId, matchId = null) {
+  const breakdown = [];
+  const userId = await resolveUserId(puuid);
+  if (await gameAlreadyCredited(userId, serverId, matchId)) {
+    console.log(`[points] match ${matchId} déjà crédité (srv ${serverId}, user ${userId}) — saut.`);
+    return breakdown;
+  }
+  await creditOrSkip(puuid, FLAT_GAME_POINTS, "win", serverId, "Victoire", breakdown, matchId);
 
-// Retourne le détail des jetons gagnés pour une victoire (sans écrire en DB)
-async function buildWinBreakdown(
-  puuid,
-  winStreak,
-  serverId,
-  badgesUnlocked = [],
-) {
-  const mode = await getServerMode(puuid, serverId);
-  const winBonus =
-    mode === "positive"
-      ? POINTS.win_positive
-      : mode === "negative"
-        ? POINTS.win_negative
-        : POINTS.win_both;
-  const breakdown = [
-    { label: "Victoire", amount: POINTS.game_played + winBonus },
-  ];
-
-  if (winStreak >= 10)
-    breakdown.push({
-      label: `Série de ${winStreak} victoires`,
-      amount: POINTS.streak_10,
-    });
-  else if (winStreak >= 5)
-    breakdown.push({
-      label: `Série de ${winStreak} victoires`,
-      amount: POINTS.streak_5,
-    });
-  else if (winStreak >= 3)
-    breakdown.push({
-      label: `Série de ${winStreak} victoires`,
-      amount: POINTS.streak_3,
-    });
-
-  for (const badge of badgesUnlocked) {
-    const rank = (badge.rank || "").toLowerCase();
-    const amount =
-      rank === "secret"
-        ? POINTS.badge_secret
-        : rank === "or" || rank === "gold"
-          ? POINTS.badge_gold
-          : rank === "argent" || rank === "silver"
-            ? POINTS.badge_silver
-            : POINTS.badge_bronze;
-    breakdown.push({ label: `${badge.name} (${badge.rank})`, amount });
+  let streakPts = 0;
+  if (winStreak >= 10) streakPts = POINTS.streak_10;
+  else if (winStreak >= 5) streakPts = POINTS.streak_5;
+  else if (winStreak >= 3) streakPts = POINTS.streak_3;
+  if (streakPts > 0) {
+    await creditOrSkip(puuid, streakPts, "streak", serverId, `Série de ${winStreak} victoires`, breakdown, matchId);
   }
   return breakdown;
 }
 
-// Retourne le détail des jetons gagnés pour une défaite (sans écrire en DB)
-async function buildLossBreakdown(puuid, serverId, badgesUnlocked = []) {
-  const mode = await getServerMode(puuid, serverId);
-  const lossBonus =
-    mode === "negative"
-      ? POINTS.loss_negative
-      : mode === "positive"
-        ? POINTS.loss_positive
-        : POINTS.loss_both;
-  const breakdown = [
-    { label: "Défaite", amount: POINTS.game_played + lossBonus },
-  ];
-
-  for (const badge of badgesUnlocked) {
-    const rank = (badge.rank || "").toLowerCase();
-    const amount =
-      rank === "secret"
-        ? POINTS.badge_secret
-        : rank === "or" || rank === "gold"
-          ? POINTS.badge_gold
-          : rank === "argent" || rank === "silver"
-            ? POINTS.badge_silver
-            : POINTS.badge_bronze;
-    breakdown.push({ label: `${badge.name} (${badge.rank})`, amount });
+// Crédite une défaite (120 fixes) et RENVOIE le détail réellement écrit en DB.
+async function awardLoss(puuid, serverId, matchId = null) {
+  const breakdown = [];
+  const userId = await resolveUserId(puuid);
+  if (await gameAlreadyCredited(userId, serverId, matchId)) {
+    console.log(`[points] match ${matchId} déjà crédité (srv ${serverId}, user ${userId}) — saut.`);
+    return breakdown;
   }
+  await creditOrSkip(puuid, FLAT_GAME_POINTS, "loss", serverId, "Défaite", breakdown, matchId);
   return breakdown;
 }
 
-async function awardLoss(puuid, serverId) {
-  await addPoints(puuid, POINTS.game_played, "game_played", serverId);
-  const mode = await getServerMode(puuid, serverId);
-  const pts =
-    mode === "negative"
-      ? POINTS.loss_negative
-      : mode === "positive"
-        ? POINTS.loss_positive
-        : POINTS.loss_both;
-  await addPoints(puuid, pts, "loss", serverId);
-}
-
-async function awardBadge(puuid, badgeRank, serverId) {
-  const rank = (badgeRank || "").toLowerCase();
-  const amount =
-    rank === "secret"
-      ? POINTS.badge_secret
-      : rank === "or" || rank === "gold"
-        ? POINTS.badge_gold
-        : rank === "argent" || rank === "silver"
-          ? POINTS.badge_silver
-          : POINTS.badge_bronze;
-  await addPoints(puuid, amount, `badge_unlock_${rank}`, serverId);
+// Crédite les points d'un badge. RENVOIE le montant réellement crédité, ou null si
+// l'écriture a échoué (afin de ne pas l'afficher comme gagné dans la notif).
+// L'idempotence des badges est déjà assurée en amont par la table `badges`
+// (awardBadge n'est appelé que sur un déblocage neuf) ; on enregistre quand même
+// le match_id pour la traçabilité.
+async function awardBadge(puuid, badgeRank, serverId, matchId = null) {
+  const amount = badgeAmount(badgeRank);
+  try {
+    await addPoints(puuid, amount, `badge_unlock_${(badgeRank || "").toLowerCase()}`, serverId, matchId);
+    return amount;
+  } catch (e) {
+    console.error(`[points] échec crédit badge ${badgeRank} (srv ${serverId}, ${puuid}): ${e.message}`);
+    return null;
+  }
 }
 
 async function resolveBets(puuid, outcome) {
@@ -259,6 +208,4 @@ module.exports = {
   awardLoss,
   awardBadge,
   resolveBets,
-  buildWinBreakdown,
-  buildLossBreakdown,
 };
