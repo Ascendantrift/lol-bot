@@ -1,11 +1,30 @@
 // ─── Discord embed builders ────────────────────────────────────────────────────
 
+const { sql } = require("../database");
+
+// Rafraîchit le hash d'avatar / pseudo Discord stocké dans `users` (utilisé par le
+// site pour afficher la PP). Le site ne le mettait à jour qu'à la connexion : la PP
+// devenait obsolète (404) si le joueur changeait son avatar Discord. On la resynchronise
+// ici à chaque partie, sans bloquer l'envoi de l'embed si l'écriture échoue.
+async function syncStoredAvatar(discordId, user) {
+  try {
+    await sql`
+      UPDATE users
+      SET avatar = ${user.avatar ?? null}, username = ${user.username ?? user.globalName ?? "user"}
+      WHERE discord_id = ${discordId}
+    `;
+  } catch (e) {
+    console.error(`[avatar] sync échoué (${discordId}): ${e.message}`);
+  }
+}
+
 async function resolveDiscordIdentity(client, player) {
   if (player.discord_id) {
     try {
       const user =
         client.users.cache.get(player.discord_id) ||
         (await client.users.fetch(player.discord_id));
+      await syncStoredAvatar(player.discord_id, user);
       return {
         label: user.globalName || user.username || player.game_name,
         avatarUrl: user.displayAvatarURL({ extension: "png", size: 128 }),

@@ -73,7 +73,7 @@ async function handleLoss(client, player, p, info, matchId, activeStreak) {
         }
         if (!unlockedPerServer.has(sub.server_id)) unlockedPerServer.set(sub.server_id, []);
         // Crédite les points du badge ; on ne le mémorise pour la notif QUE s'il est crédité.
-        const credited = await awardBadge(player.puuid, badge.rank, sub.server_id, matchId);
+        const credited = await awardBadge(player.puuid, unlock.isFirstOnServer, sub.server_id, matchId);
         if (credited != null) {
           unlockedPerServer.get(sub.server_id).push({ badge, amount: credited });
         }
