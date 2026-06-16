@@ -74,28 +74,35 @@ function formatRankLine(rankData) {
 function buildBadgesText(unlockedBadges) {
   const lines = [];
 
-  // Badges en 1er sur le serveur → une seule ligne ✨ avec "et"
-  const firstServer = unlockedBadges.filter((b) => b.isFirstOnServer);
+  // 1er du serveur → ★ (priorité d'affichage la plus haute)
+  const firstServer = unlockedBadges.filter((b) => b.kind === "first_server");
   if (firstServer.length > 0) {
     const labels = firstServer.map((b) => `${b.name} (${b.rank})`);
     const joined = labels.length === 1
       ? labels[0]
       : labels.slice(0, -1).join(", ") + " et " + labels.at(-1);
-    lines.push(`✨ **1er** à débloquer — ${joined}`);
+    lines.push(`★ **1er du serveur** — ${joined}`);
   }
 
-  // Badges réguliers non-secrets → ligne 🎖️
-  const regularNames = unlockedBadges
-    .filter((b) => !b.isFirstOnServer && b.rank !== "Secret")
+  // Autres badges (1re fois / re-obtention), non-secrets → ✨
+  const otherNames = unlockedBadges
+    .filter((b) => b.kind !== "first_server" && b.rank !== "Secret")
     .map((b) => b.name);
-  if (regularNames.length > 0) lines.push(`🎖️ ${regularNames.join(" · ")}`);
+  if (otherNames.length > 0) lines.push(`✨ ${otherNames.join(" · ")}`);
 
-  // Badges réguliers secrets → une ligne 🤫 par badge
-  for (const b of unlockedBadges.filter((b) => !b.isFirstOnServer && b.rank === "Secret")) {
+  // Secrets (hors 1er du serveur, déjà listés) → une ligne 🤫 par badge
+  for (const b of unlockedBadges.filter((b) => b.kind !== "first_server" && b.rank === "Secret")) {
     lines.push(`🤫 ${b.name}`);
   }
 
   return lines.join("\n");
+}
+
+// Message de notif web pour un déblocage de badge. Le cas (1er du serveur / 1re fois /
+// re-obtention) est porté par la pastille affichée par le front ; ici seul le verbe change.
+function badgeUnlockMessage(playerName, badgeName, kind) {
+  const verb = kind === "repeat" ? "a obtenu" : "vient de débloquer";
+  return `✨ ${playerName} ${verb} le badge « ${badgeName} ».`;
 }
 
 function buildEmbedFields({ main, unlockedBadges, rankLine, streakLine }) {
@@ -203,4 +210,5 @@ module.exports = {
   buildLossEmbed,
   buildWinEmbed,
   previewEmbed,
+  badgeUnlockMessage,
 };

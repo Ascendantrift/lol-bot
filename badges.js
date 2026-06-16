@@ -144,7 +144,7 @@ const BADGES = [
     version: 1,
     repeatable: true,
     trigger: ({ participant }) =>
-      (participant.challenges?.snowballHit || 0) >= 15,
+      (participant.challenges?.snowballsHit || 0) >= 15,
     allowed_queues: QUEUES.ARAM,
   },
   {

@@ -8,17 +8,31 @@ const BET_MULTIPLIER = 1.8;
 const FLAT_GAME_POINTS = 120;
 
 const POINTS = {
-  // Badges (montant fixe, indépendant du rang)
-  badge_new: 500,           // badge nouveau pour le joueur
-  badge_server_first: 2500, // 1er du serveur à le débloquer (remplace badge_new)
+  // Bonus de palier (s'ajoute au bonus de rang du badge)
+  badge_first_player: 1000, // 1re fois que CE joueur débloque le badge
+  badge_first_server: 2500, // 1er du serveur à le débloquer
+  // (re-obtention : aucun bonus de palier, seulement le rang)
   // Séries de victoires
   streak_3: 50,
   streak_5: 100,
   streak_10: 1000,
 };
 
-function badgeAmount(isFirstOnServer) {
-  return isFirstOnServer ? POINTS.badge_server_first : POINTS.badge_new;
+// Bonus selon le rang/rareté du badge, présent dans les 3 cas.
+function badgeRankBonus(rank) {
+  const r = (rank || "").toLowerCase();
+  if (r === "secret") return 100;
+  if (r === "or" || r === "gold") return 75;
+  if (r === "argent" || r === "silver") return 50;
+  return 25; // bronze / défaut
+}
+
+// kind : "first_server" | "first_player" | "repeat"
+function badgeAmount(kind, rank) {
+  const bonus = badgeRankBonus(rank);
+  if (kind === "first_server") return POINTS.badge_first_server + bonus;
+  if (kind === "first_player") return POINTS.badge_first_player + bonus;
+  return bonus; // re-obtention : rang seul
 }
 
 // Crédite `amount` et, si l'écriture réussit, pousse la ligne dans `breakdown`.
@@ -115,14 +129,13 @@ async function awardLoss(puuid, serverId, matchId = null) {
 // L'idempotence des badges est déjà assurée en amont par la table `badges`
 // (awardBadge n'est appelé que sur un déblocage neuf) ; on enregistre quand même
 // le match_id pour la traçabilité.
-async function awardBadge(puuid, isFirstOnServer, serverId, matchId = null) {
-  const amount = badgeAmount(isFirstOnServer);
-  const reason = isFirstOnServer ? "badge_server_first" : "badge_new";
+async function awardBadge(puuid, kind, rank, serverId, matchId = null) {
+  const amount = badgeAmount(kind, rank);
   try {
-    await addPoints(puuid, amount, reason, serverId, matchId);
+    await addPoints(puuid, amount, `badge_${kind}`, serverId, matchId);
     return amount;
   } catch (e) {
-    console.error(`[points] échec crédit badge (srv ${serverId}, ${puuid}): ${e.message}`);
+    console.error(`[points] échec crédit badge ${kind} (srv ${serverId}, ${puuid}): ${e.message}`);
     return null;
   }
 }

@@ -1,7 +1,7 @@
 const { sql }                                        = require("../database");
 const { evaluateTriggeredBadges }                    = require("../../badges");
 const { recordNotification }                         = require("./notifications");
-const { resolveDiscordIdentity, buildLossEmbed, previewEmbed } = require("./embeds");
+const { resolveDiscordIdentity, buildLossEmbed, previewEmbed, badgeUnlockMessage } = require("./embeds");
 const { QUEUE_TYPES, fetchPlayerRank, rankFromStored } = require("./riot");
 const { registerBadgeUnlock }                        = require("./badgeService");
 const { awardLoss, awardBadge, resolveBets } = require("./pointsService");
@@ -63,20 +63,23 @@ async function handleLoss(client, player, p, info, matchId, activeStreak) {
 
   // Enregistrement des badges par serveur
   const unlockedBadges = []; // badges nouveaux sur au moins un serveur (pour embed global)
-  const unlockedPerServer = new Map(); // serverId → badge[]
+  const unlockedPerServer = new Map(); // serverId → [{ badge, amount, kind, isFirstOnServer }]
   for (const badge of triggered) {
     for (const sub of subs) {
       const unlock = await registerBadgeUnlock(player.puuid, badge, sub.server_id);
-      if (unlock.isNew) {
-        if (!unlockedBadges.find((b) => b.key === badge.key)) {
-          unlockedBadges.push({ ...badge, isFirstOnServer: unlock.isFirstOnServer });
-        }
-        if (!unlockedPerServer.has(sub.server_id)) unlockedPerServer.set(sub.server_id, []);
-        // Crédite les points du badge ; on ne le mémorise pour la notif QUE s'il est crédité.
-        const credited = await awardBadge(player.puuid, unlock.isFirstOnServer, sub.server_id, matchId);
-        if (credited != null) {
-          unlockedPerServer.get(sub.server_id).push({ badge, amount: credited });
-        }
+      if (!unlock.isNew) continue;
+      // 3 cas : 1er du serveur > 1re fois pour le joueur > re-obtention (badge répétable)
+      const kind = unlock.isFirstOnServer
+        ? "first_server"
+        : (unlock.unlockCount === 1 ? "first_player" : "repeat");
+      if (!unlockedBadges.find((b) => b.key === badge.key)) {
+        unlockedBadges.push({ ...badge, isFirstOnServer: unlock.isFirstOnServer, kind });
+      }
+      if (!unlockedPerServer.has(sub.server_id)) unlockedPerServer.set(sub.server_id, []);
+      // Crédite les points du badge ; on ne le mémorise pour la notif QUE s'il est crédité.
+      const credited = await awardBadge(player.puuid, kind, badge.rank, sub.server_id, matchId);
+      if (credited != null) {
+        unlockedPerServer.get(sub.server_id).push({ badge, amount: credited, kind, isFirstOnServer: unlock.isFirstOnServer });
       }
     }
   }
@@ -137,11 +140,12 @@ async function handleLoss(client, player, p, info, matchId, activeStreak) {
       });
     }
 
-    for (const badge of unlockedBadges) {
+    // Notif badge par serveur (le cas — 1er serveur / 1re fois / re-obtention — est propre au serveur)
+    for (const { badge, amount, kind, isFirstOnServer } of serverBadges) {
       await recordNotification({
         ts, kind: "badge", accountPuuid: player.puuid, serverId: sub.server_id, matchId,
-        message: `✨ ${player.game_name} vient de débloquer le badge « ${badge.name} ».`,
-        details: { ...baseDetails, badgeKey: badge.key, badgeName: badge.name, badgeRank: badge.rank, isServerFirst: badge.isFirstOnServer },
+        message: badgeUnlockMessage(player.game_name, badge.name, kind),
+        details: { ...baseDetails, badgeKey: badge.key, badgeName: badge.name, badgeRank: badge.rank, isServerFirst, badgeUnlockKind: kind, badgePoints: amount },
       });
     }
   }
