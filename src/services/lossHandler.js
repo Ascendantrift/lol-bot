@@ -66,12 +66,10 @@ async function handleLoss(client, player, p, info, matchId, activeStreak) {
   const unlockedPerServer = new Map(); // serverId → [{ badge, amount, kind, isFirstOnServer }]
   for (const badge of triggered) {
     for (const sub of subs) {
-      const unlock = await registerBadgeUnlock(player.puuid, badge, sub.server_id);
+      const unlock = await registerBadgeUnlock(player.puuid, badge, sub.server_id, player.user_id);
       if (!unlock.isNew) continue;
-      // 3 cas : 1er du serveur > 1re fois pour le joueur > re-obtention (badge répétable)
-      const kind = unlock.isFirstOnServer
-        ? "first_server"
-        : (unlock.unlockCount === 1 ? "first_player" : "repeat");
+      // Cas calculé par utilisateur : 1er du serveur / 1re fois / ré-obtention.
+      const kind = unlock.kind;
       if (!unlockedBadges.find((b) => b.key === badge.key)) {
         unlockedBadges.push({ ...badge, isFirstOnServer: unlock.isFirstOnServer, kind });
       }

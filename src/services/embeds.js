@@ -98,11 +98,12 @@ function buildBadgesText(unlockedBadges) {
   return lines.join("\n");
 }
 
-// Message de notif web pour un déblocage de badge. Le cas (1er du serveur / 1re fois /
-// re-obtention) est porté par la pastille affichée par le front ; ici seul le verbe change.
+// Message de notif web pour un déblocage de badge. La pastille (1er du serveur /
+// 1re fois / ré-obtention) est affichée par le front ; le texte change selon le cas.
 function badgeUnlockMessage(playerName, badgeName, kind) {
-  const verb = kind === "repeat" ? "a obtenu" : "vient de débloquer";
-  return `✨ ${playerName} ${verb} le badge « ${badgeName} ».`;
+  if (kind === "first_server") return `${playerName} est le 1er à obtenir « ${badgeName} ».`;
+  if (kind === "repeat")        return `${playerName} a obtenu « ${badgeName} ».`;
+  return `${playerName} vient d'obtenir « ${badgeName} » pour la 1ère fois.`;
 }
 
 function buildEmbedFields({ main, unlockedBadges, rankLine, streakLine }) {
