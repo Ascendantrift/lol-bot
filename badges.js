@@ -1,5 +1,5 @@
 const QUEUES = {
-  SR: [400, 420, 430, 440, 490], // Normal Draft, SoloQ, Blind, Flex, Quickplay
+  SR: [400, 420, 430, 440, 480, 490], // Normal Draft, SoloQ, Blind, Flex, Swiftplay, Quickplay
   ARAM: [450],
 };
 
@@ -8,7 +8,8 @@ const BADGES = [
   {
     key: "ZZZ",
     name: "Zzz",
-    description: "Voir son écran noir pendant plus de 7 minutes dans une partie",
+    description:
+      "Voir son écran noir pendant plus de 7 minutes dans une partie",
     rank: "Bronze",
     version: 1,
     repeatable: true,
@@ -47,7 +48,8 @@ const BADGES = [
   {
     key: "SMITE_VOL",
     name: "Jungle diff",
-    description: "Se faire voler un objectif alors que le Smite était disponible",
+    description:
+      "Se faire voler un objectif alors que le Smite était disponible",
     rank: "Bronze",
     version: 1,
     repeatable: true,
@@ -79,8 +81,25 @@ const BADGES = [
     trigger: ({ oldTier, newTier, info }) => {
       const q = info?.queueId;
       if (q !== 420 && q !== 440) return false;
-      if (!oldTier || !newTier || oldTier === "UNRANKED" || newTier === "UNRANKED") return false;
-      const TIERS = ["IRON", "BRONZE", "SILVER", "GOLD", "PLATINUM", "EMERALD", "DIAMOND", "MASTER", "GRANDMASTER", "CHALLENGER"];
+      if (
+        !oldTier ||
+        !newTier ||
+        oldTier === "UNRANKED" ||
+        newTier === "UNRANKED"
+      )
+        return false;
+      const TIERS = [
+        "IRON",
+        "BRONZE",
+        "SILVER",
+        "GOLD",
+        "PLATINUM",
+        "EMERALD",
+        "DIAMOND",
+        "MASTER",
+        "GRANDMASTER",
+        "CHALLENGER",
+      ];
       const oldIdx = TIERS.indexOf(oldTier.split(" ")[0].toUpperCase());
       const newIdx = TIERS.indexOf(newTier.split(" ")[0].toUpperCase());
       return oldIdx > -1 && newIdx > -1 && newIdx < oldIdx;
@@ -94,8 +113,7 @@ const BADGES = [
     version: 1,
     repeatable: true,
     trigger: ({ participant }) =>
-      participant.deaths === 0 &&
-      participant.kills + participant.assists >= 5,
+      participant.deaths === 0 && participant.kills + participant.assists >= 5,
   },
   {
     key: "VICTIME",
@@ -118,12 +136,13 @@ const BADGES = [
   {
     key: "PROMENEUR",
     name: "Le Promeneur",
-    description: "Perdre une partie de plus de 20 min avec moins de 5000 golds gagnés",
+    description:
+      "Perdre une partie de plus de 20 min avec moins de 6000 golds gagnés",
     rank: "Argent",
     version: 1,
     repeatable: true,
     trigger: ({ participant, gameDuration }) =>
-      gameDuration > 1200 && participant.goldEarned < 5000,
+      gameDuration > 1200 && participant.goldEarned < 6000,
   },
   {
     key: "INGRONIGAUD",
@@ -150,7 +169,8 @@ const BADGES = [
   {
     key: "STOP_PLZ",
     name: "Stop plz",
-    description: "Perdre contre un joueur adverse ayant participé à la destruction de 7 tourelles et 3 inhibiteurs",
+    description:
+      "Perdre contre un joueur adverse ayant participé à la destruction de 7 tourelles et 3 inhibiteurs",
     rank: "Or",
     version: 1,
     repeatable: true,
@@ -184,7 +204,8 @@ const BADGES = [
   {
     key: "COURTESY_INHIB",
     name: "L'Inhibiteur de Courtoisie",
-    description: "Perdre après avoir détruit un inhibiteur avant la 20ème minute",
+    description:
+      "Perdre après avoir détruit un inhibiteur avant la 20ème minute",
     rank: "Or",
     version: 1,
     repeatable: true,
@@ -195,7 +216,8 @@ const BADGES = [
   {
     key: "JUNGLE_RIEN",
     name: "Jungler???",
-    description: "Terminer une partie de +30 min avec 0 Dragon et 0 Baron pour l'équipe",
+    description:
+      "Terminer une partie de +30 min avec 0 Dragon et 0 Baron pour l'équipe",
     rank: "Or",
     version: 1,
     repeatable: true,
@@ -211,7 +233,8 @@ const BADGES = [
   {
     key: "PLATINE_V1",
     name: "Maître de la Défaite",
-    description: "Posséder tous les badges de défaite de la saison 1 (Bronze à Or)",
+    description:
+      "Posséder tous les badges de défaite de la saison 1 (Bronze à Or)",
     rank: "Platine",
     version: 1,
     repeatable: false,
@@ -227,7 +250,8 @@ const BADGES = [
   {
     key: "LIFETIME_DEAD_10H",
     name: "Collectionneur de Gris",
-    description: "Avoir passé plus de 10 heures mort au total sur tous ses comptes",
+    description:
+      "Avoir passé plus de 10 heures mort au total sur tous ses comptes",
     rank: "Secret",
     repeatable: false,
     trigger: ({ totalTimeDead }) => totalTimeDead >= 36000,
@@ -373,8 +397,25 @@ const WIN_BADGES = [
     valence: "positive",
     repeatable: true,
     trigger: ({ oldTier, newTier }) => {
-      if (!oldTier || !newTier || oldTier === "UNRANKED" || newTier === "UNRANKED") return false;
-      const TIERS = ["IRON", "BRONZE", "SILVER", "GOLD", "PLATINUM", "EMERALD", "DIAMOND", "MASTER", "GRANDMASTER", "CHALLENGER"];
+      if (
+        !oldTier ||
+        !newTier ||
+        oldTier === "UNRANKED" ||
+        newTier === "UNRANKED"
+      )
+        return false;
+      const TIERS = [
+        "IRON",
+        "BRONZE",
+        "SILVER",
+        "GOLD",
+        "PLATINUM",
+        "EMERALD",
+        "DIAMOND",
+        "MASTER",
+        "GRANDMASTER",
+        "CHALLENGER",
+      ];
       const oldIdx = TIERS.indexOf(oldTier.split(" ")[0].toUpperCase());
       const newIdx = TIERS.indexOf(newTier.split(" ")[0].toUpperCase());
       return oldIdx > -1 && newIdx > -1 && newIdx > oldIdx;
@@ -396,13 +437,13 @@ const WIN_BADGES = [
   {
     key: "1V9",
     name: "1v9",
-    description: "Faire 50% ou plus des dégâts de l'équipe et gagner",
+    description: "Faire 40% ou plus des dégâts de l'équipe et gagner",
     rank: "Or",
     version: 1,
     valence: "positive",
     repeatable: true,
     trigger: ({ participant }) =>
-      (participant.challenges?.teamDamagePercentage || 0) >= 0.5,
+      (participant.challenges?.teamDamagePercentage || 0) >= 0.4,
   },
   {
     key: "INARRETABLE",
@@ -438,7 +479,8 @@ const WIN_BADGES = [
   {
     key: "SPLITPUSHER",
     name: "Splitpusher",
-    description: "Participer à la destruction de 6 tourelles et 3 inhibiteurs et gagner",
+    description:
+      "Participer à la destruction de 6 tourelles et 3 inhibiteurs et gagner",
     rank: "Or",
     version: 1,
     valence: "positive",
@@ -452,16 +494,29 @@ const WIN_BADGES = [
   {
     key: "PLATINE_WIN_V1",
     name: "Maître des Victoires",
-    description: "Posséder tous les badges de victoire de la saison 1 (Bronze à Or)",
+    description:
+      "Posséder tous les badges de victoire de la saison 1 (Bronze à Or)",
     rank: "Platine",
     version: 1,
     valence: "positive",
     repeatable: false,
     trigger: ({ ownedBadgeKeys }) => {
       const required = [
-        "FIRST_BLOOD_WIN", "EZ", "MULTI_KILL_WIN", "ARAM_SLAYER", "WARD_WIN_BRONZE",
-        "5W", "VISION_GOD", "CHASSEUR_DE_PRIMES", "KAIZEN", "WINRUN",
-        "1V9", "INARRETABLE", "IMMORTEL", "INTOMBABLE", "SPLITPUSHER",
+        "FIRST_BLOOD_WIN",
+        "EZ",
+        "MULTI_KILL_WIN",
+        "ARAM_SLAYER",
+        "WARD_WIN_BRONZE",
+        "5W",
+        "VISION_GOD",
+        "CHASSEUR_DE_PRIMES",
+        "KAIZEN",
+        "WINRUN",
+        "1V9",
+        "INARRETABLE",
+        "IMMORTEL",
+        "INTOMBABLE",
+        "SPLITPUSHER",
       ];
       return required.every((k) => ownedBadgeKeys.includes(k));
     },
@@ -544,7 +599,8 @@ const WIN_BADGES = [
   {
     key: "ASCENDANT_V1",
     name: "Le premier ascendant",
-    description: "Débloquer TOUS les badges victoires et défaites de la saison 1",
+    description:
+      "Débloquer TOUS les badges victoires et défaites de la saison 1",
     rank: "Ascendant",
     version: 1,
     valence: "positive",

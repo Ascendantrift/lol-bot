@@ -139,7 +139,7 @@ async function handleWin(client, player, p, info, matchId, previousLossStreak) {
       await recordNotification({
         ts, kind: "badge", accountPuuid: player.puuid, serverId: sub.server_id, matchId,
         message: badgeUnlockMessage(player.game_name, badge.name, kind),
-        details: { ...baseDetails, badgeKey: badge.key, badgeName: badge.name, badgeRank: badge.rank, isServerFirst, badgeUnlockKind: kind, badgePoints: amount },
+        details: { ...baseDetails, badgeKey: badge.key, badgeName: badge.name, badgeRank: badge.rank, isFirstOnServer, badgeUnlockKind: kind, badgePoints: amount },
       });
     }
   }
