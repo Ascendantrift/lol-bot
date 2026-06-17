@@ -139,11 +139,125 @@ async function checkMatches(client) {
   }
 }
 
+// gameId numérique (suffixe du matchId "EUW1_1234567890") → tri chronologique fiable :
+// le gameId est monotone croissant, donc trier dessus = ordre des parties dans le temps.
+function gameIdNum(matchId) {
+  const n = Number(String(matchId).split("_")[1]);
+  return Number.isFinite(n) ? n : 0;
+}
+
+// Traite un participant serveur d'un match déjà fetché (streaks + notif + historique).
+async function processParticipant(client, matchId, info, player, p) {
+  // Pseudo Riot mis à jour si changé (données déjà présentes dans le match)
+  if (p.riotIdGameName && p.riotIdGameName !== player.game_name) {
+    await sql`UPDATE accounts SET game_name = ${p.riotIdGameName}, tag_line = ${p.riotIdTagline ?? player.tag_line} WHERE puuid = ${player.puuid}`;
+    player.game_name = p.riotIdGameName;
+  }
+
+  let badgeKeysEarned = [];
+  let lpNormalized = null;
+  try {
+    const previousLossStreak = player.loss_streak || 0;
+    const activeStreak       = await updateLossStats(player, p.win, p.totalTimeSpentDead);
+
+    if (!p.win) {
+      const result = await handleLoss(client, player, p, info, matchId, activeStreak);
+      badgeKeysEarned = result.badgeKeys ?? result;
+      lpNormalized = result.lpNormalized ?? null;
+    } else {
+      const result = await handleWin(client, player, p, info, matchId, previousLossStreak);
+      badgeKeysEarned = result.badgeKeys ?? result;
+      lpNormalized = result.lpNormalized ?? null;
+    }
+  } catch (matchErr) {
+    console.error(`❌ Traitement match ${matchId} pour ${player.game_name}: ${matchErr.message}`);
+  }
+
+  // insertMatchHistory est toujours appelé même si le traitement a planté
+  await insertMatchHistory(matchId, player.puuid, p, info, p.win, badgeKeysEarned, lpNormalized);
+}
+
+// ── Anti-doublon partagé entre le filet `checkMatches` et le chemin "fin de game live" ──
+const _processingMatches = new Set(); // verrou par matchId (intra-process, anti-concurrence)
+
+// Vrai si ce (match, joueur) a déjà été traité (match_history écrit en fin de traitement).
+async function alreadyProcessed(matchId, puuid) {
+  const [row] = await sql`
+    SELECT 1 FROM match_history WHERE id = ${matchId} AND puuid = ${puuid} LIMIT 1
+  `;
+  return !!row;
+}
+
+// Traite un match TERMINÉ pour des comptes suivis, déclenché par la fin de game détectée
+// en live. Fetch le détail UNE seule fois (avec retries : le résultat Riot met ~30-90s à
+// être dispo après la fin), traite tous les joueurs serveur ensemble, et saute ceux déjà
+// traités par le filet `checkMatches`. Le verrou + le check match_history garantissent
+// qu'aucun match n'est traité ni fetché deux fois.
+async function processFinishedMatch(client, matchId, puuids, { retries = 5, delayMs = 30000 } = {}) {
+  if (_processingMatches.has(matchId)) return;
+
+  // Pré-filtre : si tous les comptes sont déjà traités, on ne fetch RIEN (zéro appel).
+  const pending = [];
+  for (const puuid of puuids) {
+    if (!(await alreadyProcessed(matchId, puuid))) pending.push(puuid);
+  }
+  if (pending.length === 0) return;
+
+  _processingMatches.add(matchId);
+  try {
+    const axiosConfig = { headers: { "X-Riot-Token": RIOT_API_KEY } };
+    let info = null;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const detRes = await axios.get(`https://europe.api.riotgames.com/lol/match/v5/matches/${matchId}`, axiosConfig);
+        info = detRes.data.info;
+        break;
+      } catch (e) {
+        const status = e.response?.status;
+        if (status === 404 && attempt < retries) {
+          await new Promise((r) => setTimeout(r, delayMs)); // résultat pas encore dispo
+          continue;
+        }
+        console.error(`[live→match] ${matchId} indisponible (${status || e.message})`);
+        return;
+      }
+    }
+    if (!info) return;
+
+    const isArena = info.queueId === 1700 || info.queueId === 1710 || (info.gameMode || "").toUpperCase() === "CHERRY";
+
+    for (const puuid of pending) {
+      if (await alreadyProcessed(matchId, puuid)) continue; // course éventuelle avec le filet
+      const p = info.participants.find((part) => part.puuid === puuid);
+      if (!p || info.gameDuration <= 300 || isArena) continue;
+
+      const [player] = await sql`
+        SELECT a.*, u.discord_id FROM accounts a LEFT JOIN users u ON u.id = a.user_id WHERE a.puuid = ${puuid}
+      `;
+      if (!player) continue;
+
+      await processParticipant(client, matchId, info, player, p);
+      // Avance le pointeur pour que `checkMatches` ne re-découvre/re-traite pas ce match.
+      await sql`UPDATE accounts SET last_match_id = ${matchId}, last_match_at = ${info.gameEndTimestamp} WHERE puuid = ${puuid}`;
+    }
+  } finally {
+    _processingMatches.delete(matchId);
+  }
+}
+
 async function _doCheckMatches(client) {
   const accounts = await sql`
     SELECT a.*, u.discord_id FROM accounts a LEFT JOIN users u ON u.id = a.user_id
   `;
   const now = Date.now();
+  const axiosConfig = { headers: { "X-Riot-Token": RIOT_API_KEY } };
+
+  // ── Passe 1 : découverte des nouveaux matchs, par compte ─────────────────────
+  // On ne fait QUE lister les ids ici (1 appel /ids par compte dû), puis on regroupe
+  // par matchId. Le détail du match sera fetché une seule fois en passe 2, même si
+  // plusieurs joueurs du serveur sont dans la même partie.
+  const byMatch     = new Map(); // matchId → [puuid, ...] (joueurs serveur ayant ce match neuf)
+  const playerByPuuid = new Map(); // puuid → objet compte
 
   for (const player of accounts) {
     try {
@@ -162,9 +276,7 @@ async function _doCheckMatches(client) {
       await sql`UPDATE accounts SET last_checked_at = ${now} WHERE puuid = ${player.puuid}`;
       console.log(`⏳ Vérification : ${player.game_name}`);
 
-      const axiosConfig = { headers: { "X-Riot-Token": RIOT_API_KEY } };
       // count=10 pour ne pas rater les parties si le joueur en enchaîne plusieurs
-      // entre deux checks (intervalle 2 min)
       const lolRes = await axios.get(
         `https://europe.api.riotgames.com/lol/match/v5/matches/by-puuid/${player.puuid}/ids?count=10`,
         axiosConfig,
@@ -176,58 +288,70 @@ async function _doCheckMatches(client) {
         const lastIndex = matchIds.indexOf(player.last_match_id);
         newMatchIds = lastIndex === -1 ? matchIds : matchIds.slice(0, lastIndex);
       } else if (matchIds.length > 0) {
+        // Première synchro : on mémorise sans rejouer l'historique
         await sql`UPDATE accounts SET last_match_id = ${matchIds[0]}, last_match_at = ${now} WHERE puuid = ${player.puuid}`;
         continue;
       }
+      if (newMatchIds.length === 0) continue;
 
-      newMatchIds.reverse();
+      // Avance last_match_id vers le match le plus récent (newMatchIds[0]) pour ne pas reboucler.
+      await sql`UPDATE accounts SET last_match_id = ${newMatchIds[0]} WHERE puuid = ${player.puuid}`;
 
+      playerByPuuid.set(player.puuid, player);
       for (const matchId of newMatchIds) {
-        const detRes = await axios.get(
-          `https://europe.api.riotgames.com/lol/match/v5/matches/${matchId}`,
-          axiosConfig,
-        );
-        const info = detRes.data.info;
-        const p    = info.participants.find((part) => part.puuid === player.puuid);
-
-        // Toujours avancer last_match_id (même remake) pour ne pas reboucler
-        await sql`UPDATE accounts SET last_match_id = ${matchId}, last_match_at = ${info.gameEndTimestamp} WHERE puuid = ${player.puuid}`;
-        if (!p || info.gameDuration <= 300) continue;
-
-        // Mise à jour silencieuse du pseudo Riot si changé (données déjà présentes dans le match)
-        if (p.riotIdGameName && p.riotIdGameName !== player.game_name) {
-          await sql`UPDATE accounts SET game_name = ${p.riotIdGameName}, tag_line = ${p.riotIdTagline ?? player.tag_line} WHERE puuid = ${player.puuid}`;
-          player.game_name = p.riotIdGameName;
-        }
-        if (info.queueId === 1700 || info.queueId === 1710 || (info.gameMode || "").toUpperCase() === "CHERRY") continue;
-
-        let badgeKeysEarned = [];
-        let lpNormalized = null;
-        try {
-          const previousLossStreak = player.loss_streak || 0;
-          const activeStreak       = await updateLossStats(player, p.win, p.totalTimeSpentDead);
-
-          if (!p.win) {
-            const result = await handleLoss(client, player, p, info, matchId, activeStreak);
-            badgeKeysEarned = result.badgeKeys ?? result;
-            lpNormalized = result.lpNormalized ?? null;
-          } else {
-            const result = await handleWin(client, player, p, info, matchId, previousLossStreak);
-            badgeKeysEarned = result.badgeKeys ?? result;
-            lpNormalized = result.lpNormalized ?? null;
-          }
-        } catch (matchErr) {
-          console.error(`❌ Traitement match ${matchId} pour ${player.game_name}: ${matchErr.message}`);
-        }
-
-        // insertMatchHistory est toujours appelé même si le traitement a planté
-        await insertMatchHistory(matchId, player.puuid, p, info, p.win, badgeKeysEarned, lpNormalized);
+        if (!byMatch.has(matchId)) byMatch.set(matchId, []);
+        byMatch.get(matchId).push(player.puuid);
       }
     } catch (e) {
-      console.error(`❌ Erreur ${player.game_name}: ${e.message}`);
+      console.error(`❌ Découverte ${player.game_name}: ${e.message}`);
     }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+
+  if (byMatch.size === 0) return;
+
+  // ── Passe 2 : traitement groupé par match ────────────────────────────────────
+  // Ordre chronologique (gameId croissant) → les parties d'un même joueur sont traitées
+  // dans l'ordre, donc les streaks restent corrects. 1 fetch de détail par match, et
+  // tous les joueurs serveur de cette partie sont notifiés à la suite (notifs groupées).
+  const matchIdsSorted = [...byMatch.keys()].sort((a, b) => gameIdNum(a) - gameIdNum(b));
+
+  for (const matchId of matchIdsSorted) {
+    // Si le chemin "fin de game live" traite déjà ce match, on le laisse faire (anti-doublon).
+    if (_processingMatches.has(matchId)) continue;
+    _processingMatches.add(matchId);
+    try {
+      let info;
+      try {
+        const detRes = await axios.get(`https://europe.api.riotgames.com/lol/match/v5/matches/${matchId}`, axiosConfig);
+        info = detRes.data.info;
+      } catch (e) {
+        console.error(`❌ Fetch match ${matchId}: ${e.message}`);
+        continue;
+      }
+
+      const isArena = info.queueId === 1700 || info.queueId === 1710 || (info.gameMode || "").toUpperCase() === "CHERRY";
+
+      for (const puuid of byMatch.get(matchId)) {
+        const player = playerByPuuid.get(puuid);
+        const p = info.participants.find((part) => part.puuid === puuid);
+
+        // last_match_at = fin réelle de la partie (utilisé par l'intervalle adaptatif)
+        await sql`UPDATE accounts SET last_match_at = ${info.gameEndTimestamp} WHERE puuid = ${puuid}`;
+
+        // Remake / participant introuvable / Arena → pas de notif ni d'historique (comme avant)
+        if (!p || info.gameDuration <= 300 || isArena) continue;
+        // Déjà traité par le chemin live → on saute (anti-doublon)
+        if (await alreadyProcessed(matchId, puuid)) continue;
+
+        await processParticipant(client, matchId, info, player, p);
+      }
+    } finally {
+      _processingMatches.delete(matchId);
+    }
+
     await new Promise((r) => setTimeout(r, 1000));
   }
 }
 
-module.exports = { checkMatches };
+module.exports = { checkMatches, processFinishedMatch };

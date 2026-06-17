@@ -1,5 +1,9 @@
 const { sql } = require("../database");
 const { getActiveGameByPuuid, checkActiveGame, getChampionName } = require("./riot");
+const { processFinishedMatch } = require("./matchChecker");
+
+// Plateforme Riot pour reconstruire le matchId à partir du gameId (ex: "EUW1_123…").
+const RIOT_PLATFORM = process.env.RIOT_PLATFORM || "EUW1";
 
 const LIVE_TTL_MS = 3 * 60 * 1000;        // 3 min de sécurité si l'API plante en continu
 const SPECTATOR_MIN_INTERVAL_MS = 60 * 1000; // garde pour rétrocompat éventuelle
@@ -191,7 +195,7 @@ async function _doScanIdlePlayers() {
  * Supprime immédiatement une partie quand l'API Spectator répond 404.
  * Tourne en boucle toutes les 30 s.
  */
-async function maintainActiveGames() {
+async function maintainActiveGames(client) {
   const activeRows = await sql`
     SELECT DISTINCT p.puuid, p.game_id
     FROM live_participants p
@@ -217,10 +221,25 @@ async function maintainActiveGames() {
     if (game) {
       await upsertLiveGame(game, now);
     } else if (ended) {
-      // 404 confirmé → la partie est réellement terminée
+      // 404 confirmé → la partie est réellement terminée.
+      // On récupère les joueurs suivis de cette partie AVANT de purger, puis on déclenche
+      // le fetch du résultat (en tâche de fond : il met ~30-90s à être dispo chez Riot).
+      const srvRows = await sql`
+        SELECT DISTINCT puuid FROM live_participants WHERE game_id = ${game_id} AND is_server = true
+      `;
+      const puuids = srvRows.map((r) => r.puuid);
+
       await sql`DELETE FROM live_participants WHERE game_id = ${game_id}`;
       await sql`DELETE FROM live_games WHERE id = ${game_id}`;
-      console.log(`[live] Partie ${game_id} terminée — supprimée.`);
+      console.log(`[live] Partie ${game_id} terminée — ${puuids.length} joueur(s) serveur → fetch du résultat.`);
+
+      if (client && puuids.length > 0) {
+        const matchId = `${RIOT_PLATFORM}_${game_id}`;
+        // Fire-and-forget : ne bloque pas la boucle (retries internes ~jusqu'à 2,5 min).
+        processFinishedMatch(client, matchId, puuids).catch((e) =>
+          console.error(`[live→match] ${matchId}: ${e.message}`),
+        );
+      }
     }
     // erreur réseau/API → on ne touche pas, le TTL de 3 min sert de filet
 

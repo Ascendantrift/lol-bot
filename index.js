@@ -6,7 +6,7 @@ require("dotenv").config({ path: envPath });
 const { Client, Collection, GatewayIntentBits } = require("discord.js");
 const { sql, ensureReady }       = require("./src/database");
 const { checkMatches }           = require("./src/services/matchChecker");
-const { maintainActiveGames }    = require("./src/services/liveChecker");
+const { maintainActiveGames, scanIdlePlayers } = require("./src/services/liveChecker");
 const { announceMonthlyStats }   = require("./src/services/cron");
 const { startMatchDetailServer } = require("./src/services/matchDetailServer");
 const { setupWallListener }      = require("./src/services/wallListener");
@@ -46,10 +46,20 @@ client.once("clientReady", async () => {
 
   console.log("✅ Bot prêt et base de données synchronisée !");
 
-  setInterval(() => checkMatches(client), 60_000);
+  // Filet de sécurité (rattrape les games non détectées en live). Reste utile mais n'est
+  // plus le chemin principal de réactivité → on peut l'espacer pour économiser des appels.
+  const CHECK_MATCHES_MS = Number(process.env.CHECK_MATCHES_MS) || 60_000;
+  setInterval(() => checkMatches(client), CHECK_MATCHES_MS);
 
-  maintainActiveGames().catch((e) => console.error("live tick:", e?.message || e));
-  setInterval(() => maintainActiveGames().catch((e) => console.error("live tick:", e?.message || e)), 30_000);
+  // Détection de FIN de partie (Spectator) + déclenche le fetch groupé du résultat.
+  maintainActiveGames(client).catch((e) => console.error("live tick:", e?.message || e));
+  setInterval(() => maintainActiveGames(client).catch((e) => console.error("live tick:", e?.message || e)), 30_000);
+
+  // Détection de DÉBUT de partie (Spectator) sur les comptes idle. Capture aussi, gratuitement,
+  // les coéquipiers suivis présents dans une game détectée (coveredPuuids).
+  const LIVE_SCAN_MS = Number(process.env.LIVE_SCAN_MS) || 120_000;
+  scanIdlePlayers().catch((e) => console.error("scan idle:", e?.message || e));
+  setInterval(() => scanIdlePlayers().catch((e) => console.error("scan idle:", e?.message || e)), LIVE_SCAN_MS);
 
   setInterval(async () => {
     const now = new Date();
