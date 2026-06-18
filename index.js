@@ -9,6 +9,7 @@ const { checkMatches }           = require("./src/services/matchChecker");
 const { maintainActiveGames, scanIdlePlayers } = require("./src/services/liveChecker");
 const { announceMonthlyStats }   = require("./src/services/cron");
 const { startMatchDetailServer } = require("./src/services/matchDetailServer");
+const { startRealtimeServer }    = require("./src/services/realtimeServer");
 const { setupWallListener }      = require("./src/services/wallListener");
 
 const client = new Client({
@@ -37,6 +38,7 @@ for (const file of commandFiles) {
 client.once("clientReady", async () => {
   await ensureReady();
   startMatchDetailServer(client);
+  startRealtimeServer();
 
   // Nettoyage des comptes orphelins
   await sql`DELETE FROM accounts WHERE puuid NOT IN (SELECT DISTINCT puuid FROM server_members)`;

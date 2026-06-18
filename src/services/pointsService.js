@@ -1,5 +1,6 @@
 const { sql } = require("../database");
 const { recordNotification } = require("./notifications");
+const { publish } = require("./realtime");
 
 const BET_MULTIPLIER = 1.8;
 
@@ -144,6 +145,7 @@ async function resolveBets(puuid, outcome) {
   const pending = await sql`
     SELECT
       b.id, b.bettor_user_id, b.prediction, b.amount, b.server_id,
+      b.target_puuid, b.created_at,
       t.game_name AS target_name,
       (SELECT a.puuid FROM accounts a WHERE a.user_id::text = b.bettor_user_id ORDER BY a.id LIMIT 1) AS bettor_puuid
     FROM bets b
@@ -161,6 +163,19 @@ async function resolveBets(puuid, outcome) {
     const won = bet.prediction === outcome;
     const status = won ? "won" : "lost";
     await sql`UPDATE bets SET status = ${status}, resolved_at = ${now} WHERE id = ${bet.id}`;
+
+    // Notifie le service realtime (relayé au navigateur de l'utilisateur). Non bloquant.
+    await publish(`bets:user:${bet.bettor_user_id}`, {
+      id: bet.id,
+      bettorUserId: bet.bettor_user_id,
+      targetPuuid: bet.target_puuid,
+      targetName: bet.target_name ?? null,
+      prediction: bet.prediction,
+      amount: bet.amount,
+      status,
+      createdAt: bet.created_at,
+      resolvedAt: now,
+    });
 
     const targetName = bet.target_name || "ce joueur";
     const predLabel = bet.prediction === "win" ? "victoire" : "défaite";
