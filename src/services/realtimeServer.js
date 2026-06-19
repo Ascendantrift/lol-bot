@@ -84,12 +84,12 @@ function startRealtimeServer() {
   // Abonné applicatif : relaie les canaux Redis vers les rooms Socket.IO
   const appSub = pub.duplicate();
   appSub.on("error", (e) => console.error("[realtime] redis appSub:", e.message));
-  appSub.psubscribe("pedanrift:server:*", "announce:server:*", "bets:user:*");
+  appSub.psubscribe("ascentix:server:*", "announce:server:*", "bets:user:*");
   appSub.on("pmessage", (_pattern, channel, message) => {
     const id = channel.slice(channel.lastIndexOf(":") + 1);
     try {
-      if (channel.startsWith("pedanrift:server:")) {
-        io.to("server:" + id).emit("pedanrift:refresh");
+      if (channel.startsWith("ascentix:server:")) {
+        io.to("server:" + id).emit("ascentix:refresh");
       } else if (channel.startsWith("announce:server:")) {
         io.to("server:" + id).emit("notif:announce", JSON.parse(message));
       } else if (channel.startsWith("bets:user:")) {

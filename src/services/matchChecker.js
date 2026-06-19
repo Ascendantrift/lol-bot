@@ -225,11 +225,14 @@ async function processFinishedMatch(client, matchId, puuids, { retries = 5, dela
     if (!info) return;
 
     const isArena = info.queueId === 1700 || info.queueId === 1710 || (info.gameMode || "").toUpperCase() === "CHERRY";
+    // Parties contre des bots (Co-op vs AI / Tutoriel) : les IA ont puuid "BOT".
+    // On les ignore (pas de badges, pas de notif, pas d'historique).
+    const isBotGame = info.participants.some((part) => part.puuid === "BOT");
 
     for (const puuid of pending) {
       if (await alreadyProcessed(matchId, puuid)) continue; // course éventuelle avec le filet
       const p = info.participants.find((part) => part.puuid === puuid);
-      if (!p || info.gameDuration <= 300 || isArena) continue;
+      if (!p || info.gameDuration <= 300 || isArena || isBotGame) continue;
 
       const [player] = await sql`
         SELECT a.*, u.discord_id FROM accounts a LEFT JOIN users u ON u.id = a.user_id WHERE a.puuid = ${puuid}
@@ -331,6 +334,8 @@ async function _doCheckMatches(client) {
       }
 
       const isArena = info.queueId === 1700 || info.queueId === 1710 || (info.gameMode || "").toUpperCase() === "CHERRY";
+      // Parties contre des bots (Co-op vs AI / Tutoriel) : les IA ont puuid "BOT".
+      const isBotGame = info.participants.some((part) => part.puuid === "BOT");
 
       for (const puuid of byMatch.get(matchId)) {
         const player = playerByPuuid.get(puuid);
@@ -339,8 +344,8 @@ async function _doCheckMatches(client) {
         // last_match_at = fin réelle de la partie (utilisé par l'intervalle adaptatif)
         await sql`UPDATE accounts SET last_match_at = ${info.gameEndTimestamp} WHERE puuid = ${puuid}`;
 
-        // Remake / participant introuvable / Arena → pas de notif ni d'historique (comme avant)
-        if (!p || info.gameDuration <= 300 || isArena) continue;
+        // Remake / participant introuvable / Arena / vs bots → pas de notif ni d'historique
+        if (!p || info.gameDuration <= 300 || isArena || isBotGame) continue;
         // Déjà traité par le chemin live → on saute (anti-doublon)
         if (await alreadyProcessed(matchId, puuid)) continue;
 
