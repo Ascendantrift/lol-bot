@@ -122,6 +122,28 @@ async function insertMatchHistory(matchId, puuid, participant, info, win, badgeK
           lp_normalized           = COALESCE(EXCLUDED.lp_normalized, match_history.lp_normalized)
       `;
     }
+
+    // ── Tracé Strava : on récupère la timeline (1 appel) et on stocke les
+    // positions du joueur par minute. Server-agnostique → stocké une seule fois.
+    try {
+      const tl = await axios.get(
+        `https://europe.api.riotgames.com/lol/match/v5/matches/${matchId}/timeline`,
+        { headers: { "X-Riot-Token": RIOT_API_KEY } },
+      );
+      const pid = String(participant.participantId);
+      const path = [];
+      for (const frame of tl.data?.info?.frames ?? []) {
+        const pf = frame.participantFrames?.[pid];
+        if (pf?.position) path.push({ x: pf.position.x, y: pf.position.y, t: frame.timestamp });
+      }
+      if (path.length > 0) {
+        await sql`
+          INSERT INTO match_paths (match_id, puuid, path_json)
+          VALUES (${matchId}, ${puuid}, ${JSON.stringify(path)})
+          ON CONFLICT (match_id, puuid) DO UPDATE SET path_json = EXCLUDED.path_json
+        `;
+      }
+    } catch { /* timeline indispo (vieille partie / rate limit) → ignoré */ }
   } catch (e) {
     console.error("match_history:", e.message);
   }

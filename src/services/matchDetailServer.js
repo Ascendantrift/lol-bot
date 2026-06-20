@@ -5,6 +5,30 @@ const { RIOT_API_KEY, getDdragonVersion } = require("./riot");
 const PORT = parseInt(process.env.MATCH_API_PORT || "3717", 10);
 const REGIONAL_HOST = "https://europe.api.riotgames.com";
 
+/**
+ * Récupère la timeline Match-V5 et en extrait le tracé (positions par minute)
+ * de chaque participant : { [participantId]: [{ x, y, t }, …] }.
+ * Un seul appel renvoie tout le parcours de la partie ; null si indispo.
+ */
+async function fetchMatchPaths(matchId) {
+  try {
+    const res = await axios.get(`${REGIONAL_HOST}/lol/match/v5/matches/${matchId}/timeline`, {
+      headers: { "X-Riot-Token": RIOT_API_KEY },
+    });
+    const frames = res.data?.info?.frames ?? [];
+    const byPid = {};
+    for (const frame of frames) {
+      for (const [pid, pf] of Object.entries(frame.participantFrames ?? {})) {
+        if (!pf.position) continue;
+        (byPid[pid] ||= []).push({ x: pf.position.x, y: pf.position.y, t: frame.timestamp });
+      }
+    }
+    return byPid;
+  } catch {
+    return {};
+  }
+}
+
 /** Récupère les détails complets d'une partie depuis Riot Match-V5. */
 async function fetchMatchDetail(matchId) {
   const res = await axios.get(`${REGIONAL_HOST}/lol/match/v5/matches/${matchId}`, {
@@ -13,6 +37,7 @@ async function fetchMatchDetail(matchId) {
 
   const info = res.data.info;
   const v = await getDdragonVersion();
+  const paths = await fetchMatchPaths(matchId);
 
   const participants = info.participants.map((p) => ({
     puuid: p.puuid,
@@ -34,6 +59,8 @@ async function fetchMatchDetail(matchId) {
     killParticipation: p.challenges?.killParticipation ?? null,
     teamDamagePercentage: p.challenges?.teamDamagePercentage ?? null,
     pentaKills: p.pentaKills ?? 0,
+    // Tracé Strava : positions {x,y,t} par minute (vide si timeline indispo).
+    path: paths[String(p.participantId)] ?? [],
   }));
 
   return {
