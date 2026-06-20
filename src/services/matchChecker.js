@@ -89,7 +89,10 @@ async function insertMatchHistory(matchId, puuid, participant, info, win, badgeK
   try {
     const playedAt    = new Date(info.gameEndTimestamp).toISOString();
     const badgesJson  = Array.isArray(badgeKeys) && badgeKeys.length > 0 ? JSON.stringify(badgeKeys) : null;
-    const teamPos     = typeof participant.teamPosition === "string" && participant.teamPosition ? participant.teamPosition : null;
+    // team_position est un enum en base (TOP/JUNGLE/MIDDLE/BOTTOM/UTILITY) :
+    // toute autre valeur (ex. file sans rôle, valeur inattendue de Riot) → null.
+    const VALID_POSITIONS = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"];
+    const teamPos     = VALID_POSITIONS.includes(participant.teamPosition) ? participant.teamPosition : null;
     const serverIds = await listServerIdsForPuuid(puuid);
     for (const serverId of serverIds) {
       await sql`
