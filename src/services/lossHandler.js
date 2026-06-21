@@ -149,7 +149,13 @@ async function handleLoss(client, player, p, info, matchId, activeStreak) {
   }
 
   // ── Bets (les points de partie ont déjà été crédités dans la boucle notif) ────
-  await resolveBets(player.puuid, "loss").catch((e) => console.error(`[resolveBets] loss ${player.game_name}: ${e.message}`));
+  await resolveBets(player.puuid, matchId, {
+    win: false,
+    kills: p.kills, deaths: p.deaths, assists: p.assists,
+    cs: (p.totalMinionsKilled || 0) + (p.neutralMinionsKilled || 0),
+    firstBlood: !!p.firstBloodKill,
+    largestMultiKill: p.largestMultiKill || 0,
+  }).catch((e) => console.error(`[resolveBets] loss ${player.game_name}: ${e.message}`));
 
   const lpNormalized = (() => {
     if (!rankData) return null;

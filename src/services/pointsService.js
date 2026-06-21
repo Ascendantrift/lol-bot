@@ -141,47 +141,80 @@ async function awardBadge(puuid, kind, rank, serverId, matchId = null) {
   }
 }
 
-async function resolveBets(puuid, outcome) {
+// gameId numérique à partir du matchId Riot ("EUW1_123" → "123").
+function gameIdFromMatchId(matchId) {
+  const s = String(matchId);
+  const i = s.indexOf("_");
+  return i >= 0 ? s.slice(i + 1) : s;
+}
+
+// Évalue la condition générique (stat/comparator/line) d'un pari contre les
+// stats finales du joueur. null = condition inconnue (on n'y touche pas).
+function betWon(bet, stats) {
+  let actual;
+  switch (bet.stat) {
+    case "win":         actual = stats.win ? 1 : 0; break;
+    case "kills":       actual = stats.kills; break;
+    case "deaths":      actual = stats.deaths; break;
+    case "assists":     actual = stats.assists; break;
+    case "kda":         actual = stats.deaths === 0 ? (stats.kills + stats.assists) : (stats.kills + stats.assists) / stats.deaths; break;
+    case "cs":          actual = stats.cs; break;
+    case "first_blood": actual = stats.firstBlood ? 1 : 0; break;
+    case "multikill":   actual = stats.largestMultiKill; break;
+    default:            return null;
+  }
+  const line = Number(bet.line);
+  if (bet.comparator === "gte") return actual >= line;
+  if (bet.comparator === "lte") return actual <= line;
+  if (bet.comparator === "is")  return actual === line;
+  return null;
+}
+
+// Résout les paris LIVE d'un joueur pour UNE partie précise (match_id = gameId).
+async function resolveBets(puuid, matchId, stats) {
+  const gid = gameIdFromMatchId(matchId);
   const pending = await sql`
     SELECT
-      b.id, b.bettor_user_id, b.prediction, b.amount, b.server_id,
-      b.target_puuid, b.created_at,
+      b.id, b.bettor_user_id, b.bet_type, b.stat, b.comparator, b.line, b.multiplier,
+      b.amount, b.server_id, b.target_puuid, b.created_at,
       t.game_name AS target_name,
-      (SELECT a.puuid FROM accounts a WHERE a.user_id::text = b.bettor_user_id ORDER BY a.id LIMIT 1) AS bettor_puuid
+      (SELECT a.puuid FROM accounts a WHERE a.user_id::text = b.bettor_user_id ORDER BY a.puuid LIMIT 1) AS bettor_puuid
     FROM bets b
     LEFT JOIN accounts t ON t.puuid = b.target_puuid
-    WHERE b.target_puuid = ${puuid} AND b.status = 'pending'
+    WHERE b.target_puuid = ${puuid} AND b.match_id = ${gid} AND b.status = 'pending'
   `;
   if (pending.length === 0) return;
 
-  console.log(
-    `[resolveBets] ${pending.length} pari(s) à résoudre pour puuid=${puuid} outcome=${outcome}`,
-  );
-
+  console.log(`[resolveBets] ${pending.length} pari(s) à résoudre pour puuid=${puuid} match=${gid}`);
   const now = Date.now();
+
   for (const bet of pending) {
-    const won = bet.prediction === outcome;
+    const outcome = betWon(bet, stats);
+    if (outcome === null) continue; // condition inconnue → laissé en attente
+    const won = outcome;
     const status = won ? "won" : "lost";
+    const mult = Number(bet.multiplier) || BET_MULTIPLIER;
+    const reward = won ? Math.floor(bet.amount * mult) : 0;
+    const label = bet.bet_type || "pari";
+    const targetName = bet.target_name || "ce joueur";
+
     await sql`UPDATE bets SET status = ${status}, resolved_at = ${now} WHERE id = ${bet.id}`;
 
-    // Notifie le service realtime (relayé au navigateur de l'utilisateur). Non bloquant.
     await publish(`bets:user:${bet.bettor_user_id}`, {
       id: bet.id,
       bettorUserId: bet.bettor_user_id,
       targetPuuid: bet.target_puuid,
       targetName: bet.target_name ?? null,
-      prediction: bet.prediction,
+      betType: bet.bet_type,
       amount: bet.amount,
+      multiplier: mult,
       status,
+      reward,
       createdAt: bet.created_at,
       resolvedAt: now,
     });
 
-    const targetName = bet.target_name || "ce joueur";
-    const predLabel = bet.prediction === "win" ? "victoire" : "défaite";
-
     if (won) {
-      const reward = Math.floor(bet.amount * BET_MULTIPLIER);
       const userId = parseInt(bet.bettor_user_id, 10);
       if (userId) {
         await sql`
@@ -196,13 +229,9 @@ async function resolveBets(puuid, outcome) {
           VALUES (${userId}, ${bet.server_id}, ${reward}, 'bet_win')
         `;
       }
-      console.log(
-        `[resolveBets] Pari #${bet.id} GAGNÉ — +${reward} pts (server ${bet.server_id})`,
-      );
+      console.log(`[resolveBets] Pari #${bet.id} (${label}) GAGNÉ — +${reward} pts (server ${bet.server_id})`);
     } else {
-      console.log(
-        `[resolveBets] Pari #${bet.id} PERDU — ${bet.amount} pts perdus`,
-      );
+      console.log(`[resolveBets] Pari #${bet.id} (${label}) PERDU — ${bet.amount} pts perdus`);
     }
 
     await recordNotification({
@@ -211,17 +240,54 @@ async function resolveBets(puuid, outcome) {
       accountPuuid: bet.bettor_puuid ?? null,
       serverId: bet.server_id,
       message: won
-        ? `🎲 Pari gagné sur ${targetName} (${predLabel}) — +${Math.floor(bet.amount * BET_MULTIPLIER)} pts`
-        : `🎲 Pari perdu sur ${targetName} (${predLabel}) — ${bet.amount} pts perdus`,
+        ? `🎲 Pari gagné sur ${targetName} (${label}) — +${reward} pts`
+        : `🎲 Pari perdu sur ${targetName} (${label}) — ${bet.amount} pts perdus`,
       details: {
         betId: bet.id,
         targetName,
-        prediction: bet.prediction,
+        betType: bet.bet_type,
         amount: bet.amount,
-        ...(won ? { reward: Math.floor(bet.amount * BET_MULTIPLIER) } : {}),
+        ...(won ? { reward } : {}),
       },
     });
   }
+}
+
+// Filet de sécurité : un pari dont la partie n'a jamais été traitée (mode non
+// suivi, match manqué…) resterait "pending" à l'infini, mise bloquée. Au-delà de
+// 3h (bien plus que la durée max d'une game), on annule et on REMBOURSE la mise.
+const STALE_BET_MS = 3 * 60 * 60 * 1000;
+
+async function expireStaleBets() {
+  const cutoff = Date.now() - STALE_BET_MS;
+  const stale = await sql`
+    SELECT id, bettor_user_id, server_id, amount FROM bets
+    WHERE status = 'pending' AND created_at < ${cutoff}
+  `;
+  if (stale.length === 0) return;
+
+  const now = Date.now();
+  for (const bet of stale) {
+    await sql`UPDATE bets SET status = 'cancelled', resolved_at = ${now} WHERE id = ${bet.id}`;
+    const userId = parseInt(bet.bettor_user_id, 10);
+    if (userId) {
+      await sql`
+        INSERT INTO user_points (user_id, server_id, points, total_earned)
+        VALUES (${userId}, ${bet.server_id}, ${bet.amount}, 0)
+        ON CONFLICT (user_id, server_id) DO UPDATE SET points = user_points.points + ${bet.amount}
+      `;
+      await sql`
+        INSERT INTO point_transactions (user_id, server_id, amount, reason)
+        VALUES (${userId}, ${bet.server_id}, ${bet.amount}, 'bet_refund')
+      `;
+    }
+    await publish(`bets:user:${bet.bettor_user_id}`, {
+      id: bet.id, bettorUserId: bet.bettor_user_id, status: "cancelled",
+      amount: bet.amount, reward: bet.amount, resolvedAt: now,
+    });
+    console.log(`[expireBets] Pari #${bet.id} non résolu (>3h) → remboursé ${bet.amount} pts`);
+  }
+  console.log(`[expireBets] ${stale.length} pari(s) bloqué(s) remboursé(s).`);
 }
 
 module.exports = {
@@ -231,4 +297,5 @@ module.exports = {
   awardLoss,
   awardBadge,
   resolveBets,
+  expireStaleBets,
 };

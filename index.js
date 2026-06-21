@@ -8,6 +8,7 @@ const { sql, ensureReady }       = require("./src/database");
 const { checkMatches }           = require("./src/services/matchChecker");
 const { maintainActiveGames, scanIdlePlayers } = require("./src/services/liveChecker");
 const { announceMonthlyStats }   = require("./src/services/cron");
+const { expireStaleBets }        = require("./src/services/pointsService");
 const { startMatchDetailServer } = require("./src/services/matchDetailServer");
 const { startRealtimeServer }    = require("./src/services/realtimeServer");
 const { setupWallListener }      = require("./src/services/wallListener");
@@ -62,6 +63,10 @@ client.once("clientReady", async () => {
   const LIVE_SCAN_MS = Number(process.env.LIVE_SCAN_MS) || 120_000;
   scanIdlePlayers().catch((e) => console.error("scan idle:", e?.message || e));
   setInterval(() => scanIdlePlayers().catch((e) => console.error("scan idle:", e?.message || e)), LIVE_SCAN_MS);
+
+  // Filet : rembourse les paris bloqués en "pending" (>3h, partie jamais traitée).
+  expireStaleBets().catch((e) => console.error("expire bets:", e?.message || e));
+  setInterval(() => expireStaleBets().catch((e) => console.error("expire bets:", e?.message || e)), 10 * 60_000);
 
   setInterval(async () => {
     const now = new Date();
