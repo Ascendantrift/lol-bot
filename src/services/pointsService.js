@@ -141,6 +141,20 @@ async function awardBadge(puuid, kind, rank, serverId, matchId = null) {
   }
 }
 
+// Libellés humains des paris (miroir de lib/betProps.ts côté front) pour les notifs.
+const BET_LABELS = {
+  win: "Victoire", loss: "Défaite",
+  kills_5: "≥ 5 kills", kills_10: "≥ 10 kills", kills_15: "≥ 15 kills",
+  deaths_u2: "≤ 2 morts", deaths_u5: "≤ 5 morts",
+  assists_10: "≥ 10 assists", assists_20: "≥ 20 assists",
+  kda_3: "KDA ≥ 3", kda_5: "KDA ≥ 5",
+  cs_150: "≥ 150 CS", cs_250: "≥ 250 CS",
+  first_blood: "First Blood", multi_2: "Double kill +", penta: "Pentakill",
+};
+function betLabel(betType) {
+  return BET_LABELS[betType] || betType || "pari";
+}
+
 // gameId numérique à partir du matchId Riot ("EUW1_123" → "123").
 function gameIdFromMatchId(matchId) {
   const s = String(matchId);
@@ -195,7 +209,7 @@ async function resolveBets(puuid, matchId, stats) {
     const status = won ? "won" : "lost";
     const mult = Number(bet.multiplier) || BET_MULTIPLIER;
     const reward = won ? Math.floor(bet.amount * mult) : 0;
-    const label = bet.bet_type || "pari";
+    const label = betLabel(bet.bet_type);
     const targetName = bet.target_name || "ce joueur";
 
     await sql`UPDATE bets SET status = ${status}, resolved_at = ${now} WHERE id = ${bet.id}`;
@@ -253,41 +267,100 @@ async function resolveBets(puuid, matchId, stats) {
   }
 }
 
+// Récupère un puuid du parieur (pour la notif). Null si aucun compte.
+async function bettorPuuid(bettorUserId) {
+  const [row] = await sql`SELECT a.puuid FROM accounts a WHERE a.user_id::text = ${bettorUserId} ORDER BY a.puuid LIMIT 1`;
+  return row?.puuid ?? null;
+}
+
+// Résout les JAMBES de combinés portant sur cette partie, puis liquide les
+// combinés impactés : perdu dès qu'une jambe perd, gagné quand toutes gagnent.
+async function resolveCombos(puuid, matchId, stats) {
+  const gid = gameIdFromMatchId(matchId);
+  const legs = await sql`
+    SELECT id, combo_id, stat, comparator, line FROM bet_combo_legs
+    WHERE target_puuid = ${puuid} AND match_id = ${gid} AND status = 'pending'
+  `;
+  if (legs.length === 0) return;
+
+  const affected = new Set();
+  for (const leg of legs) {
+    const won = betWon({ stat: leg.stat, comparator: leg.comparator, line: leg.line }, stats);
+    if (won === null) continue;
+    await sql`UPDATE bet_combo_legs SET status = ${won ? "won" : "lost"} WHERE id = ${leg.id}`;
+    affected.add(leg.combo_id);
+  }
+
+  const now = Date.now();
+  for (const comboId of affected) {
+    const [combo] = await sql`SELECT id, bettor_user_id, server_id, amount, multiplier, status FROM bet_combos WHERE id = ${comboId}`;
+    if (!combo || combo.status !== "pending") continue;
+    const legRows = await sql`SELECT status FROM bet_combo_legs WHERE combo_id = ${comboId}`;
+    const anyLost = legRows.some((l) => l.status === "lost");
+    const anyPending = legRows.some((l) => l.status === "pending");
+    const bp = await bettorPuuid(combo.bettor_user_id);
+
+    if (anyLost) {
+      await sql`UPDATE bet_combos SET status = 'lost', resolved_at = ${now} WHERE id = ${comboId}`;
+      await publish(`bets:user:${combo.bettor_user_id}`, { comboId, status: "lost", amount: combo.amount, resolvedAt: now });
+      await recordNotification({ ts: now, kind: "bet_lost", accountPuuid: bp, serverId: combo.server_id, message: `🎲 Combiné perdu — ${combo.amount} pts perdus`, details: { comboId, amount: combo.amount } });
+      console.log(`[resolveCombos] Combiné #${comboId} PERDU — ${combo.amount} pts`);
+    } else if (!anyPending) {
+      const reward = Math.floor(combo.amount * Number(combo.multiplier));
+      const userId = parseInt(combo.bettor_user_id, 10);
+      if (userId) {
+        await sql`
+          INSERT INTO user_points (user_id, server_id, points, total_earned)
+          VALUES (${userId}, ${combo.server_id}, ${reward}, ${reward})
+          ON CONFLICT (user_id, server_id) DO UPDATE SET
+            points = user_points.points + ${reward}, total_earned = user_points.total_earned + ${reward}
+        `;
+        await sql`INSERT INTO point_transactions (user_id, server_id, amount, reason) VALUES (${userId}, ${combo.server_id}, ${reward}, 'bet_win')`;
+      }
+      await sql`UPDATE bet_combos SET status = 'won', resolved_at = ${now} WHERE id = ${comboId}`;
+      await publish(`bets:user:${combo.bettor_user_id}`, { comboId, status: "won", amount: combo.amount, reward, resolvedAt: now });
+      await recordNotification({ ts: now, kind: "bet_won", accountPuuid: bp, serverId: combo.server_id, message: `🎲 Combiné GAGNÉ ×${combo.multiplier} — +${reward} pts`, details: { comboId, amount: combo.amount, reward } });
+      console.log(`[resolveCombos] Combiné #${comboId} GAGNÉ — +${reward} pts`);
+    }
+  }
+}
+
 // Filet de sécurité : un pari dont la partie n'a jamais été traitée (mode non
 // suivi, match manqué…) resterait "pending" à l'infini, mise bloquée. Au-delà de
 // 3h (bien plus que la durée max d'une game), on annule et on REMBOURSE la mise.
 const STALE_BET_MS = 3 * 60 * 60 * 1000;
 
+async function refundPoints(userId, serverId, amount) {
+  if (!userId) return;
+  await sql`
+    INSERT INTO user_points (user_id, server_id, points, total_earned)
+    VALUES (${userId}, ${serverId}, ${amount}, 0)
+    ON CONFLICT (user_id, server_id) DO UPDATE SET points = user_points.points + ${amount}
+  `;
+  await sql`INSERT INTO point_transactions (user_id, server_id, amount, reason) VALUES (${userId}, ${serverId}, ${amount}, 'bet_refund')`;
+}
+
 async function expireStaleBets() {
   const cutoff = Date.now() - STALE_BET_MS;
-  const stale = await sql`
-    SELECT id, bettor_user_id, server_id, amount FROM bets
-    WHERE status = 'pending' AND created_at < ${cutoff}
-  `;
-  if (stale.length === 0) return;
-
   const now = Date.now();
+
+  const stale = await sql`SELECT id, bettor_user_id, server_id, amount FROM bets WHERE status = 'pending' AND created_at < ${cutoff}`;
   for (const bet of stale) {
     await sql`UPDATE bets SET status = 'cancelled', resolved_at = ${now} WHERE id = ${bet.id}`;
-    const userId = parseInt(bet.bettor_user_id, 10);
-    if (userId) {
-      await sql`
-        INSERT INTO user_points (user_id, server_id, points, total_earned)
-        VALUES (${userId}, ${bet.server_id}, ${bet.amount}, 0)
-        ON CONFLICT (user_id, server_id) DO UPDATE SET points = user_points.points + ${bet.amount}
-      `;
-      await sql`
-        INSERT INTO point_transactions (user_id, server_id, amount, reason)
-        VALUES (${userId}, ${bet.server_id}, ${bet.amount}, 'bet_refund')
-      `;
-    }
-    await publish(`bets:user:${bet.bettor_user_id}`, {
-      id: bet.id, bettorUserId: bet.bettor_user_id, status: "cancelled",
-      amount: bet.amount, reward: bet.amount, resolvedAt: now,
-    });
+    await refundPoints(parseInt(bet.bettor_user_id, 10), bet.server_id, bet.amount);
+    await publish(`bets:user:${bet.bettor_user_id}`, { id: bet.id, bettorUserId: bet.bettor_user_id, status: "cancelled", amount: bet.amount, reward: bet.amount, resolvedAt: now });
     console.log(`[expireBets] Pari #${bet.id} non résolu (>3h) → remboursé ${bet.amount} pts`);
   }
-  console.log(`[expireBets] ${stale.length} pari(s) bloqué(s) remboursé(s).`);
+  if (stale.length) console.log(`[expireBets] ${stale.length} pari(s) simple(s) remboursé(s).`);
+
+  const staleCombos = await sql`SELECT id, bettor_user_id, server_id, amount FROM bet_combos WHERE status = 'pending' AND created_at < ${cutoff}`;
+  for (const c of staleCombos) {
+    await sql`UPDATE bet_combos SET status = 'cancelled', resolved_at = ${now} WHERE id = ${c.id}`;
+    await refundPoints(parseInt(c.bettor_user_id, 10), c.server_id, c.amount);
+    await publish(`bets:user:${c.bettor_user_id}`, { comboId: c.id, status: "cancelled", amount: c.amount, reward: c.amount, resolvedAt: now });
+    console.log(`[expireBets] Combiné #${c.id} non résolu (>3h) → remboursé ${c.amount} pts`);
+  }
+  if (staleCombos.length) console.log(`[expireBets] ${staleCombos.length} combiné(s) remboursé(s).`);
 }
 
 module.exports = {
@@ -297,5 +370,6 @@ module.exports = {
   awardLoss,
   awardBadge,
   resolveBets,
+  resolveCombos,
   expireStaleBets,
 };

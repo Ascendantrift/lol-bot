@@ -4,7 +4,7 @@ const { recordNotification }                         = require("./notifications"
 const { resolveDiscordIdentity, buildLossEmbed, previewEmbed, badgeUnlockMessage } = require("./embeds");
 const { QUEUE_TYPES, fetchPlayerRank, rankFromStored } = require("./riot");
 const { registerBadgeUnlock }                        = require("./badgeService");
-const { awardLoss, awardBadge, resolveBets } = require("./pointsService");
+const { awardLoss, awardBadge, resolveBets, resolveCombos } = require("./pointsService");
 
 
 function tierColumnForRankedQueue(queueId) {
@@ -149,13 +149,15 @@ async function handleLoss(client, player, p, info, matchId, activeStreak) {
   }
 
   // ── Bets (les points de partie ont déjà été crédités dans la boucle notif) ────
-  await resolveBets(player.puuid, matchId, {
+  const _betStats = {
     win: false,
     kills: p.kills, deaths: p.deaths, assists: p.assists,
     cs: (p.totalMinionsKilled || 0) + (p.neutralMinionsKilled || 0),
     firstBlood: !!p.firstBloodKill,
     largestMultiKill: p.largestMultiKill || 0,
-  }).catch((e) => console.error(`[resolveBets] loss ${player.game_name}: ${e.message}`));
+  };
+  await resolveBets(player.puuid, matchId, _betStats).catch((e) => console.error(`[resolveBets] loss ${player.game_name}: ${e.message}`));
+  await resolveCombos(player.puuid, matchId, _betStats).catch((e) => console.error(`[resolveCombos] loss ${player.game_name}: ${e.message}`));
 
   const lpNormalized = (() => {
     if (!rankData) return null;
