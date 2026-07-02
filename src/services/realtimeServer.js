@@ -7,6 +7,7 @@
 //     pedanrift:server:{id} → emit "pedanrift:refresh"  (room server)
 //     announce:server:{id}  → emit "notif:announce"     (room server)
 //     bets:user:{id}        → emit "bet:resolved"        (room user)
+//     notif:user:{id}       → emit "notif:personal"      (room user)
 //   (noms conservés tels quels ; le renommage Ascentix se fera côté web+bot ensemble.)
 const http = require("http");
 const { createHmac, timingSafeEqual } = require("crypto");
@@ -84,7 +85,7 @@ function startRealtimeServer() {
   // Abonné applicatif : relaie les canaux Redis vers les rooms Socket.IO
   const appSub = pub.duplicate();
   appSub.on("error", (e) => console.error("[realtime] redis appSub:", e.message));
-  appSub.psubscribe("ascentix:server:*", "announce:server:*", "bets:user:*");
+  appSub.psubscribe("ascentix:server:*", "announce:server:*", "bets:user:*", "notif:user:*");
   appSub.on("pmessage", (_pattern, channel, message) => {
     const id = channel.slice(channel.lastIndexOf(":") + 1);
     try {
@@ -94,6 +95,8 @@ function startRealtimeServer() {
         io.to("server:" + id).emit("notif:announce", JSON.parse(message));
       } else if (channel.startsWith("bets:user:")) {
         io.to("user:" + id).emit("bet:resolved", JSON.parse(message));
+      } else if (channel.startsWith("notif:user:")) {
+        io.to("user:" + id).emit("notif:personal", JSON.parse(message));
       }
     } catch (e) {
       console.error("[realtime] relais:", e.message);
