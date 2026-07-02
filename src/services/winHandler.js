@@ -13,12 +13,13 @@ function tierColumnForRankedQueue(queueId) {
   return null;
 }
 
-// Renvoie les serveurs Discord en mode 'positive' ou 'both' pour ce joueur
+// Renvoie les serveurs dont le réglage Discord (indépendant de l'affichage du
+// site) autorise les notifications de victoire pour ce joueur.
 async function getWinSubs(puuid) {
   return sql`
     SELECT s.id AS server_id, s.channel_id FROM servers s
     JOIN server_members sm ON sm.server_id = s.id
-    WHERE sm.puuid = ${puuid} AND s.mode IN ('positive', 'both')
+    WHERE sm.puuid = ${puuid} AND s.discord_mode IN ('positive', 'both')
   `;
 }
 
