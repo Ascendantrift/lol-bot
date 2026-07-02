@@ -9,6 +9,7 @@ const { checkMatches }           = require("./src/services/matchChecker");
 const { maintainActiveGames, scanIdlePlayers } = require("./src/services/liveChecker");
 const { announceMonthlyStats }   = require("./src/services/cron");
 const { expireStaleBets }        = require("./src/services/pointsService");
+const { syncNewSkins }           = require("./src/services/cardSync");
 const { startMatchDetailServer } = require("./src/services/matchDetailServer");
 const { startRealtimeServer }    = require("./src/services/realtimeServer");
 const { setupWallListener }      = require("./src/services/wallListener");
@@ -75,6 +76,23 @@ client.once("clientReady", async () => {
       if (global.lastAnnouncedMonth !== currentMonthStr) {
         global.lastAnnouncedMonth = currentMonthStr;
         await announceMonthlyStats(client);
+      }
+    }
+
+    // Nouveaux skins Data Dragon → card_definitions, chaque jeudi midi (ajout
+    // pur, jamais de modification des cartes existantes — voir cardSync.js).
+    if (now.getDay() === 4 && now.getHours() === 12 && now.getMinutes() < 60) {
+      const todayStr = now.toISOString().slice(0, 10);
+      if (global.lastCardSyncDate !== todayStr) {
+        global.lastCardSyncDate = todayStr;
+        try {
+          const result = await syncNewSkins();
+          if (result) {
+            console.log(`[cardSync] ${result.version} — +${result.championsAdded} champions, +${result.skinsAdded} skins, +${result.chromasAdded} chromas`);
+          }
+        } catch (e) {
+          console.error("[cardSync]", e?.message || e);
+        }
       }
     }
   }, 60 * 60 * 1000);
